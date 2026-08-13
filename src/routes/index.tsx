@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useRef, useState } from "react";
-import { ingestCorpus, ragAnswer, speechToText } from "@/lib/rag.functions";
+import { debugRetrieval, ingestCorpus, ragAnswer, speechToText } from "@/lib/rag.functions";
 
 export const Route = createFileRoute("/")({
   head: () => ({
