@@ -60,31 +60,44 @@ function Index() {
   const ingest = useServerFn(ingestCorpus);
   const stt = useServerFn(speechToText);
   const answerFn = useServerFn(ragAnswer);
+  const debugFn = useServerFn(debugRetrieval);
 
   const [loadStatus, setLoadStatus] = useState("");
+  const [loadResult, setLoadResult] = useState<Awaited<ReturnType<typeof ingestCorpus>> | null>(null);
   const [loading, setLoading] = useState(false);
   const [recording, setRecording] = useState(false);
   const [busy, setBusy] = useState(false);
   const [transcript, setTranscript] = useState("");
   const [answer, setAnswer] = useState("");
   const [totalMs, setTotalMs] = useState<number | null>(null);
+  const [debugBusy, setDebugBusy] = useState(false);
+  const [debugResult, setDebugResult] = useState<Awaited<ReturnType<typeof debugRetrieval>> | null>(null);
 
   const recorder = useRef<{ stop: () => Promise<Blob> } | null>(null);
 
   async function handleLoad() {
     setLoading(true);
     setLoadStatus("Loading data…");
+    setLoadResult(null);
     try {
       const res = await ingest();
-      setLoadStatus(
-        res.errors.length
-          ? `Loaded ${res.chunks_created} chunks from ${res.rows_fetched} rows (${res.errors.length} errors: ${res.errors[0]})`
-          : `Loaded ${res.chunks_created} chunks from ${res.rows_fetched} rows`,
-      );
+      setLoadResult(res);
+      setLoadStatus("");
     } catch (e) {
       setLoadStatus(`Failed: ${String(e)}`);
     }
     setLoading(false);
+  }
+
+  async function handleDebugRetrieval() {
+    setDebugBusy(true);
+    setDebugResult(null);
+    try {
+      setDebugResult(await debugFn({ data: { query: "What is the boiling point of water?" } }));
+    } catch (e) {
+      setDebugResult({ query: "What is the boiling point of water?", matches: [], error: String(e) });
+    }
+    setDebugBusy(false);
   }
 
   async function startRecording() {
