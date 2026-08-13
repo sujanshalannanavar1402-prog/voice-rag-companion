@@ -43,15 +43,42 @@ function chunkWords(text: string, size = 200, overlap = 30): string[] {
 }
 
 async function embed(texts: string[], apiKey: string): Promise<number[][]> {
-  const res = await fetch("https://api.openai.com/v1/embeddings", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ model: "text-embedding-3-small", input: texts }),
-  });
+  // OpenAI-style keys start with "sk-"; anything else is treated as a Google
+  // Generative Language API key (Gemini embeddings, 1536 dims).
+  if (apiKey.startsWith("sk-")) {
+    const res = await fetch("https://api.openai.com/v1/embeddings", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "text-embedding-3-small", input: texts }),
+    });
+    if (!res.ok) throw new Error(`Embedding failed: ${res.status} ${await res.text()}`);
+    const json = (await res.json()) as { data: { embedding: number[] }[] };
+    return json.data.map((d) => d.embedding);
+  }
+
+  const res = await fetch(
+    "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:batchEmbedContents",
+    {
+      method: "POST",
+      headers: { "x-goog-api-key": apiKey, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        requests: texts.map((t) => ({
+          model: "models/gemini-embedding-001",
+          content: { parts: [{ text: t }] },
+          outputDimensionality: 1536,
+        })),
+      }),
+    },
+  );
   if (!res.ok) throw new Error(`Embedding failed: ${res.status} ${await res.text()}`);
-  const json = (await res.json()) as { data: { embedding: number[] }[] };
-  return json.data.map((d) => d.embedding);
+  const json = (await res.json()) as { embeddings: { values: number[] }[] };
+  return json.embeddings.map((e) => {
+    // Gemini embeddings are not normalized when a custom dimensionality is used.
+    const norm = Math.sqrt(e.values.reduce((s, v) => s + v * v, 0)) || 1;
+    return e.values.map((v) => v / norm);
+  });
 }
+
 
 export const ingestCorpus = createServerFn({ method: "POST" }).handler(async () => {
   const errors: string[] = [];
