@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useRef, useState } from "react";
-import { ingestCorpus, ragAnswer, speechToText } from "@/lib/rag.functions";
+import { debugRetrieval, ingestCorpus, ragAnswer, speechToText } from "@/lib/rag.functions";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -60,31 +60,44 @@ function Index() {
   const ingest = useServerFn(ingestCorpus);
   const stt = useServerFn(speechToText);
   const answerFn = useServerFn(ragAnswer);
+  const debugFn = useServerFn(debugRetrieval);
 
   const [loadStatus, setLoadStatus] = useState("");
+  const [loadResult, setLoadResult] = useState<Awaited<ReturnType<typeof ingestCorpus>> | null>(null);
   const [loading, setLoading] = useState(false);
   const [recording, setRecording] = useState(false);
   const [busy, setBusy] = useState(false);
   const [transcript, setTranscript] = useState("");
   const [answer, setAnswer] = useState("");
   const [totalMs, setTotalMs] = useState<number | null>(null);
+  const [debugBusy, setDebugBusy] = useState(false);
+  const [debugResult, setDebugResult] = useState<Awaited<ReturnType<typeof debugRetrieval>> | null>(null);
 
   const recorder = useRef<{ stop: () => Promise<Blob> } | null>(null);
 
   async function handleLoad() {
     setLoading(true);
     setLoadStatus("Loading data…");
+    setLoadResult(null);
     try {
       const res = await ingest();
-      setLoadStatus(
-        res.errors.length
-          ? `Loaded ${res.chunks_created} chunks from ${res.rows_fetched} rows (${res.errors.length} errors: ${res.errors[0]})`
-          : `Loaded ${res.chunks_created} chunks from ${res.rows_fetched} rows`,
-      );
+      setLoadResult(res);
+      setLoadStatus("");
     } catch (e) {
       setLoadStatus(`Failed: ${String(e)}`);
     }
     setLoading(false);
+  }
+
+  async function handleDebugRetrieval() {
+    setDebugBusy(true);
+    setDebugResult(null);
+    try {
+      setDebugResult(await debugFn({ data: { query: "What is the boiling point of water?" } }));
+    } catch (e) {
+      setDebugResult({ query: "What is the boiling point of water?", matches: [], error: String(e) });
+    }
+    setDebugBusy(false);
   }
 
   async function startRecording() {
@@ -161,6 +174,41 @@ function Index() {
           {loading ? "Loading…" : "Load Data"}
         </button>
         {loadStatus && <p className="mt-3 text-sm text-muted-foreground">{loadStatus}</p>}
+        {loadResult && (
+          <div className="mt-4 space-y-1 rounded-lg bg-muted p-4 text-sm text-foreground">
+            <p>Rows fetched: {loadResult.rows_fetched}</p>
+            <p>Chunks created: {loadResult.chunks_created}</p>
+            <p>Total chunks in table: {loadResult.total_chunks_in_table}</p>
+            <p className="text-muted-foreground">Sample chunk:</p>
+            <p className="whitespace-pre-wrap text-xs">{loadResult.sample_chunk_text || "(none)"}</p>
+            {loadResult.errors.length > 0 && (
+              <p className="text-xs text-destructive">Errors: {loadResult.errors.join(" | ")}</p>
+            )}
+          </div>
+        )}
+
+        <button
+          onClick={handleDebugRetrieval}
+          disabled={debugBusy}
+          className="mt-4 rounded-md border border-border px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-muted disabled:opacity-50"
+        >
+          {debugBusy ? "Testing…" : "Debug: Test Retrieval"}
+        </button>
+        {debugResult && (
+          <div className="mt-3 space-y-2 rounded-lg bg-muted p-4 text-xs">
+            <p className="text-muted-foreground">Query: {debugResult.query}</p>
+            {debugResult.error && <p className="text-destructive">{debugResult.error}</p>}
+            {debugResult.matches.length === 0 && !debugResult.error && <p>No matches returned.</p>}
+            {debugResult.matches.map((m, i) => (
+              <div key={i} className="border-t border-border pt-2">
+                <p className="text-muted-foreground">
+                  #{i + 1} · similarity {m.similarity?.toFixed(4)} · doc {m.source_doc_id ?? "—"}
+                </p>
+                <p className="whitespace-pre-wrap text-foreground">{m.text}</p>
+              </div>
+            ))}
+          </div>
+        )}
       </section>
 
       <section className="mt-6 rounded-xl border border-border p-5">
