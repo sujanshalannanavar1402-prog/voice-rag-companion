@@ -1,9 +1,9 @@
 import { createServerFn } from "@tanstack/react-start";
 
 const HF_PRIMARY =
-  "https://datasets-server.huggingface.co/rows?dataset=ai4bharat/MSMARCO-XI&config=default&split=train&offset=0&length=100";
+  "https://datasets-server.huggingface.co/rows?dataset=ai4bharat/MSMARCO-XI&config=default&split=train&offset=0&length=500";
 const HF_FALLBACK =
-  "https://datasets-server.huggingface.co/rows?dataset=microsoft/ms_marco&config=v1.1&split=train&offset=0&length=100";
+  "https://datasets-server.huggingface.co/rows?dataset=microsoft/ms_marco&config=v1.1&split=train&offset=0&length=500";
 
 async function withRetry<T>(fn: () => Promise<T>): Promise<T> {
   try {
