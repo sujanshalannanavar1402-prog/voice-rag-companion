@@ -14,13 +14,74 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      chunks: {
+        Row: {
+          created_at: string
+          embedding: string | null
+          id: string
+          source_doc_id: string | null
+          text: string
+        }
+        Insert: {
+          created_at?: string
+          embedding?: string | null
+          id?: string
+          source_doc_id?: string | null
+          text: string
+        }
+        Update: {
+          created_at?: string
+          embedding?: string | null
+          id?: string
+          source_doc_id?: string | null
+          text?: string
+        }
+        Relationships: []
+      }
+      latency_logs: {
+        Row: {
+          created_at: string
+          generation_ms: number | null
+          id: string
+          query_text: string | null
+          retrieval_ms: number | null
+          stt_ms: number | null
+          total_ms: number | null
+        }
+        Insert: {
+          created_at?: string
+          generation_ms?: number | null
+          id?: string
+          query_text?: string | null
+          retrieval_ms?: number | null
+          stt_ms?: number | null
+          total_ms?: number | null
+        }
+        Update: {
+          created_at?: string
+          generation_ms?: number | null
+          id?: string
+          query_text?: string | null
+          retrieval_ms?: number | null
+          stt_ms?: number | null
+          total_ms?: number | null
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      match_chunks: {
+        Args: { match_count?: number; query_embedding: string }
+        Returns: {
+          id: string
+          similarity: number
+          source_doc_id: string
+          text: string
+        }[]
+      }
     }
     Enums: {
       [_ in never]: never
