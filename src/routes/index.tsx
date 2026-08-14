@@ -1,7 +1,8 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useRef, useState } from "react";
-import { debugRetrieval, ingestCorpus, ragAnswer, speechToText } from "@/lib/rag.functions";
+import { corpusStats, debugRetrieval, ingestCorpus, ragAnswer, speechToText } from "@/lib/rag.functions";
+
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -61,6 +62,7 @@ function Index() {
   const stt = useServerFn(speechToText);
   const answerFn = useServerFn(ragAnswer);
   const debugFn = useServerFn(debugRetrieval);
+  const statsFn = useServerFn(corpusStats);
 
   const [loadStatus, setLoadStatus] = useState("");
   const [loadResult, setLoadResult] = useState<Awaited<ReturnType<typeof ingestCorpus>> | null>(null);
@@ -72,8 +74,23 @@ function Index() {
   const [totalMs, setTotalMs] = useState<number | null>(null);
   const [debugBusy, setDebugBusy] = useState(false);
   const [debugResult, setDebugResult] = useState<Awaited<ReturnType<typeof debugRetrieval>> | null>(null);
+  const [ragDebug, setRagDebug] = useState<Awaited<ReturnType<typeof ragAnswer>>["debug"] | null>(null);
+  const [showDebug, setShowDebug] = useState(false);
+  const [stats, setStats] = useState<Awaited<ReturnType<typeof corpusStats>> | null>(null);
+  const [statsBusy, setStatsBusy] = useState(false);
 
   const recorder = useRef<{ stop: () => Promise<Blob> } | null>(null);
+
+  async function handleStats() {
+    setStatsBusy(true);
+    try {
+      setStats(await statsFn());
+    } catch (e) {
+      setStats({ total_chunks: 0, samples: [], error: String(e) });
+    }
+    setStatsBusy(false);
+  }
+
 
   async function handleLoad() {
     setLoading(true);
@@ -134,6 +151,7 @@ function Index() {
     setTranscript("Transcribing…");
     setAnswer("");
     setTotalMs(null);
+    setRagDebug(null);
     try {
       const base64 = await new Promise<string>((resolve) => {
         const reader = new FileReader();
@@ -152,6 +170,8 @@ function Index() {
       const res = await answerFn({ data: { query: sttRes.transcript, sttMs } });
       setAnswer(res.error ? `Error: ${res.error}` : res.answer);
       setTotalMs(res.latency?.total_ms ?? null);
+      setRagDebug(res.debug ?? null);
+
     } catch (e) {
       setAnswer(`Error: ${String(e)}`);
     }
@@ -212,6 +232,31 @@ function Index() {
       </section>
 
       <section className="mt-6 rounded-xl border border-border p-5">
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-medium text-foreground">Corpus Stats</h2>
+          <button
+            onClick={handleStats}
+            disabled={statsBusy}
+            className="rounded-md border border-border px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-muted disabled:opacity-50"
+          >
+            {statsBusy ? "Loading…" : "Refresh"}
+          </button>
+        </div>
+        {stats && (
+          <div className="mt-3 space-y-2 rounded-lg bg-muted p-4 text-xs">
+            {stats.error && <p className="text-destructive">{stats.error}</p>}
+            <p>Total chunks: {stats.total_chunks}</p>
+            {stats.samples.map((s, i) => (
+              <p key={s.id} className="whitespace-pre-wrap text-muted-foreground">
+                #{i + 1} · doc {s.source_doc_id ?? "—"} · {s.preview}
+              </p>
+            ))}
+          </div>
+        )}
+      </section>
+
+
+      <section className="mt-6 rounded-xl border border-border p-5">
         <button
           onClick={recording ? stopRecording : startRecording}
           disabled={busy}
@@ -241,7 +286,54 @@ function Index() {
             )}
           </div>
         )}
+
+        {ragDebug && (
+          <div className="mt-4 rounded-lg border border-border p-4 text-xs">
+            <button
+              onClick={() => setShowDebug((v) => !v)}
+              className="text-xs font-medium text-foreground"
+              aria-expanded={showDebug}
+            >
+              {showDebug ? "▾" : "▸"} Debug Info
+            </button>
+            {showDebug && (
+              <div className="mt-3 space-y-2">
+                <p>
+                  Refused: {String(ragDebug.refused)}
+                  {ragDebug.refused ? ` · reason: ${ragDebug.refusal_reason ?? "unknown"}` : ""}
+                </p>
+                <p>Guardrail ran: {String(ragDebug.guardrail_ran)}</p>
+                <p>
+                  Centroid similarity:{" "}
+                  {ragDebug.centroid_similarity === null ? "n/a" : ragDebug.centroid_similarity.toFixed(4)}
+                </p>
+                <p>
+                  Groundedness check ran: {String(ragDebug.groundedness_ran)} · result:{" "}
+                  {ragDebug.groundedness_result ?? "n/a"}
+                </p>
+                <div className="border-t border-border pt-2">
+                  <p className="text-muted-foreground">Top-{ragDebug.retrieved.length} retrieved chunks:</p>
+                  {ragDebug.retrieved.length === 0 && <p>None returned.</p>}
+                  {ragDebug.retrieved.map((r, i) => (
+                    <p key={i} className="mt-1 whitespace-pre-wrap">
+                      #{i + 1} · sim {r.similarity === null ? "—" : r.similarity.toFixed(4)} · doc{" "}
+                      {r.source_doc_id ?? "—"} · {r.preview}
+                    </p>
+                  ))}
+                </div>
+                {ragDebug.notes.length > 0 && (
+                  <div className="border-t border-border pt-2 text-muted-foreground">
+                    {ragDebug.notes.map((n, i) => (
+                      <p key={i}>• {n}</p>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
       </section>
+
     </main>
   );
 }

@@ -257,14 +257,66 @@ export const speechToText = createServerFn({ method: "POST" })
     }
   });
 
+export type RagDebug = {
+  refused: boolean;
+  refusal_reason: "off_topic" | "unsafe" | null;
+  centroid_similarity: number | null;
+  guardrail_ran: boolean;
+  groundedness_ran: boolean;
+  groundedness_result: "YES" | "NO" | null;
+  retrieved: { similarity: number | null; source_doc_id: string | null; preview: string }[];
+  notes: string[];
+};
+
+export const corpusStats = createServerFn({ method: "POST" }).handler(async () => {
+  try {
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { count, error: countError } = await supabaseAdmin
+      .from("chunks")
+      .select("*", { count: "exact", head: true });
+    if (countError) throw new Error(countError.message);
+    const total = count ?? 0;
+    const offset = total > 5 ? Math.floor(Math.random() * (total - 5)) : 0;
+    const { data: rows, error } = await supabaseAdmin
+      .from("chunks")
+      .select("id, text, source_doc_id")
+      .range(offset, offset + 4);
+    if (error) throw new Error(error.message);
+    return {
+      total_chunks: total,
+      samples: (rows ?? []).map((r) => ({
+        id: r.id as string,
+        source_doc_id: (r.source_doc_id as string | null) ?? null,
+        preview: String(r.text ?? "").slice(0, 100),
+      })),
+      error: null as string | null,
+    };
+  } catch (e) {
+    return { total_chunks: 0, samples: [], error: String(e) };
+  }
+});
+
 export const ragAnswer = createServerFn({ method: "POST" })
   .inputValidator((input: { query: string; sttMs?: number }) => input)
   .handler(async ({ data }) => {
     const started = Date.now();
+    const debug: RagDebug = {
+      refused: false,
+      refusal_reason: null,
+      centroid_similarity: null,
+      guardrail_ran: false,
+      groundedness_ran: false,
+      groundedness_result: null,
+      retrieved: [],
+      notes: [
+        "No off-topic/unsafe guardrail is implemented in this pipeline, so refused is always false.",
+        "No groundedness (YES/NO) check is implemented, so it never runs.",
+      ],
+    };
     const embedKey = process.env["EMBEDDING_API_KEY"];
     const lovableKey = process.env["LOVABLE_API_KEY"];
     if (!embedKey || !lovableKey) {
-      return { answer: "", sources: [], latency: null, error: "Missing API keys" };
+      return { answer: "", sources: [], latency: null, debug, error: "Missing API keys" };
     }
 
     try {
@@ -276,7 +328,18 @@ export const ragAnswer = createServerFn({ method: "POST" })
         match_count: 5,
       });
       if (error) throw new Error(error.message);
-      const sources = (matches ?? []).map((m: { text: string }) => m.text);
+      const rows = (matches ?? []) as {
+        text: string;
+        similarity: number;
+        source_doc_id: string | null;
+      }[];
+      const sources = rows.map((m) => m.text);
+      debug.retrieved = rows.map((m) => ({
+        similarity: m.similarity ?? null,
+        source_doc_id: m.source_doc_id ?? null,
+        preview: String(m.text ?? "").slice(0, 100),
+      }));
+      if (rows.length === 0) debug.notes.push("Retrieval returned 0 chunks — the chunks table may be empty.");
       const retrieval_ms = Date.now() - retrievalStart;
 
       const generationStart = Date.now();
@@ -307,8 +370,10 @@ export const ragAnswer = createServerFn({ method: "POST" })
       const latency = { stt_ms: data.sttMs ?? 0, retrieval_ms, generation_ms, total_ms };
       await supabaseAdmin.from("latency_logs").insert({ query_text: data.query, ...latency });
 
-      return { answer, sources, latency };
+      return { answer, sources, latency, debug };
     } catch (e) {
-      return { answer: "", sources: [], latency: null, error: String(e) };
+      debug.notes.push(`Pipeline threw: ${String(e)}`);
+      return { answer: "", sources: [], latency: null, debug, error: String(e) };
     }
   });
+
