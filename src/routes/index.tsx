@@ -232,6 +232,31 @@ function Index() {
       </section>
 
       <section className="mt-6 rounded-xl border border-border p-5">
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-medium text-foreground">Corpus Stats</h2>
+          <button
+            onClick={handleStats}
+            disabled={statsBusy}
+            className="rounded-md border border-border px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-muted disabled:opacity-50"
+          >
+            {statsBusy ? "Loading…" : "Refresh"}
+          </button>
+        </div>
+        {stats && (
+          <div className="mt-3 space-y-2 rounded-lg bg-muted p-4 text-xs">
+            {stats.error && <p className="text-destructive">{stats.error}</p>}
+            <p>Total chunks: {stats.total_chunks}</p>
+            {stats.samples.map((s, i) => (
+              <p key={s.id} className="whitespace-pre-wrap text-muted-foreground">
+                #{i + 1} · doc {s.source_doc_id ?? "—"} · {s.preview}
+              </p>
+            ))}
+          </div>
+        )}
+      </section>
+
+
+      <section className="mt-6 rounded-xl border border-border p-5">
         <button
           onClick={recording ? stopRecording : startRecording}
           disabled={busy}
