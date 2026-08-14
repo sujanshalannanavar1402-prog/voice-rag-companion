@@ -151,6 +151,7 @@ function Index() {
     setTranscript("Transcribing…");
     setAnswer("");
     setTotalMs(null);
+    setRagDebug(null);
     try {
       const base64 = await new Promise<string>((resolve) => {
         const reader = new FileReader();
@@ -169,6 +170,8 @@ function Index() {
       const res = await answerFn({ data: { query: sttRes.transcript, sttMs } });
       setAnswer(res.error ? `Error: ${res.error}` : res.answer);
       setTotalMs(res.latency?.total_ms ?? null);
+      setRagDebug(res.debug ?? null);
+
     } catch (e) {
       setAnswer(`Error: ${String(e)}`);
     }
