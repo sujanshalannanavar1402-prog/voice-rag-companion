@@ -286,7 +286,54 @@ function Index() {
             )}
           </div>
         )}
+
+        {ragDebug && (
+          <div className="mt-4 rounded-lg border border-border p-4 text-xs">
+            <button
+              onClick={() => setShowDebug((v) => !v)}
+              className="text-xs font-medium text-foreground"
+              aria-expanded={showDebug}
+            >
+              {showDebug ? "▾" : "▸"} Debug Info
+            </button>
+            {showDebug && (
+              <div className="mt-3 space-y-2">
+                <p>
+                  Refused: {String(ragDebug.refused)}
+                  {ragDebug.refused ? ` · reason: ${ragDebug.refusal_reason ?? "unknown"}` : ""}
+                </p>
+                <p>Guardrail ran: {String(ragDebug.guardrail_ran)}</p>
+                <p>
+                  Centroid similarity:{" "}
+                  {ragDebug.centroid_similarity === null ? "n/a" : ragDebug.centroid_similarity.toFixed(4)}
+                </p>
+                <p>
+                  Groundedness check ran: {String(ragDebug.groundedness_ran)} · result:{" "}
+                  {ragDebug.groundedness_result ?? "n/a"}
+                </p>
+                <div className="border-t border-border pt-2">
+                  <p className="text-muted-foreground">Top-{ragDebug.retrieved.length} retrieved chunks:</p>
+                  {ragDebug.retrieved.length === 0 && <p>None returned.</p>}
+                  {ragDebug.retrieved.map((r, i) => (
+                    <p key={i} className="mt-1 whitespace-pre-wrap">
+                      #{i + 1} · sim {r.similarity === null ? "—" : r.similarity.toFixed(4)} · doc{" "}
+                      {r.source_doc_id ?? "—"} · {r.preview}
+                    </p>
+                  ))}
+                </div>
+                {ragDebug.notes.length > 0 && (
+                  <div className="border-t border-border pt-2 text-muted-foreground">
+                    {ragDebug.notes.map((n, i) => (
+                      <p key={i}>• {n}</p>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
       </section>
+
     </main>
   );
 }
