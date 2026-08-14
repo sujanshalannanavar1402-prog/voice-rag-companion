@@ -62,6 +62,7 @@ function Index() {
   const stt = useServerFn(speechToText);
   const answerFn = useServerFn(ragAnswer);
   const debugFn = useServerFn(debugRetrieval);
+  const statsFn = useServerFn(corpusStats);
 
   const [loadStatus, setLoadStatus] = useState("");
   const [loadResult, setLoadResult] = useState<Awaited<ReturnType<typeof ingestCorpus>> | null>(null);
@@ -73,8 +74,23 @@ function Index() {
   const [totalMs, setTotalMs] = useState<number | null>(null);
   const [debugBusy, setDebugBusy] = useState(false);
   const [debugResult, setDebugResult] = useState<Awaited<ReturnType<typeof debugRetrieval>> | null>(null);
+  const [ragDebug, setRagDebug] = useState<Awaited<ReturnType<typeof ragAnswer>>["debug"] | null>(null);
+  const [showDebug, setShowDebug] = useState(false);
+  const [stats, setStats] = useState<Awaited<ReturnType<typeof corpusStats>> | null>(null);
+  const [statsBusy, setStatsBusy] = useState(false);
 
   const recorder = useRef<{ stop: () => Promise<Blob> } | null>(null);
+
+  async function handleStats() {
+    setStatsBusy(true);
+    try {
+      setStats(await statsFn());
+    } catch (e) {
+      setStats({ total_chunks: 0, samples: [], error: String(e) });
+    }
+    setStatsBusy(false);
+  }
+
 
   async function handleLoad() {
     setLoading(true);
