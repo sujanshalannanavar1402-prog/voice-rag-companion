@@ -1,33 +1,10 @@
 import { createServerFn } from "@tanstack/react-start";
 
-const HF_PRIMARY =
-  "https://datasets-server.huggingface.co/rows?dataset=ai4bharat/MSMARCO-XI&config=default&split=train&offset=0&length=500";
-const HF_FALLBACK =
-  "https://datasets-server.huggingface.co/rows?dataset=microsoft/ms_marco&config=v1.1&split=train&offset=0&length=500";
-
 async function withRetry<T>(fn: () => Promise<T>): Promise<T> {
   try {
     return await fn();
   } catch {
     return await fn();
-  }
-}
-
-function collectText(value: unknown, out: string[]) {
-  if (typeof value === "string") {
-    if (value.trim().split(/\s+/).length >= 20) out.push(value.trim());
-    return;
-  }
-  if (Array.isArray(value)) {
-    for (const v of value) collectText(v, out);
-    return;
-  }
-  if (value && typeof value === "object") {
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      if (/passage|text|content|body|answer|context/i.test(k) || Array.isArray(v) || typeof v === "object") {
-        collectText(v, out);
-      }
-    }
   }
 }
 
@@ -79,19 +56,6 @@ async function embed(texts: string[], apiKey: string): Promise<number[][]> {
   });
 }
 
-
-function extractPassages(row: unknown): { field: string; texts: string[] } {
-  const r = row as Record<string, unknown> | undefined;
-  // MS MARCO shape: { passages: { passage_text: string[] , ... }, query, answers }
-  const passages = r?.["passages"] as Record<string, unknown> | undefined;
-  const pt = passages?.["passage_text"];
-  if (Array.isArray(pt) && pt.length) {
-    return { field: "passages.passage_text", texts: pt.filter((t): t is string => typeof t === "string") };
-  }
-  const generic: string[] = [];
-  collectText(row, generic);
-  return { field: "heuristic-scan", texts: generic };
-}
 
 export const ingestCorpus = createServerFn({ method: "POST" }).handler(async () => {
   const errors: string[] = [];
