@@ -1,33 +1,10 @@
 import { createServerFn } from "@tanstack/react-start";
 
-const HF_PRIMARY =
-  "https://datasets-server.huggingface.co/rows?dataset=ai4bharat/MSMARCO-XI&config=default&split=train&offset=0&length=500";
-const HF_FALLBACK =
-  "https://datasets-server.huggingface.co/rows?dataset=microsoft/ms_marco&config=v1.1&split=train&offset=0&length=500";
-
 async function withRetry<T>(fn: () => Promise<T>): Promise<T> {
   try {
     return await fn();
   } catch {
     return await fn();
-  }
-}
-
-function collectText(value: unknown, out: string[]) {
-  if (typeof value === "string") {
-    if (value.trim().split(/\s+/).length >= 20) out.push(value.trim());
-    return;
-  }
-  if (Array.isArray(value)) {
-    for (const v of value) collectText(v, out);
-    return;
-  }
-  if (value && typeof value === "object") {
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      if (/passage|text|content|body|answer|context/i.test(k) || Array.isArray(v) || typeof v === "object") {
-        collectText(v, out);
-      }
-    }
   }
 }
 
@@ -80,19 +57,6 @@ async function embed(texts: string[], apiKey: string): Promise<number[][]> {
 }
 
 
-function extractPassages(row: unknown): { field: string; texts: string[] } {
-  const r = row as Record<string, unknown> | undefined;
-  // MS MARCO shape: { passages: { passage_text: string[] , ... }, query, answers }
-  const passages = r?.["passages"] as Record<string, unknown> | undefined;
-  const pt = passages?.["passage_text"];
-  if (Array.isArray(pt) && pt.length) {
-    return { field: "passages.passage_text", texts: pt.filter((t): t is string => typeof t === "string") };
-  }
-  const generic: string[] = [];
-  collectText(row, generic);
-  return { field: "heuristic-scan", texts: generic };
-}
-
 export const ingestCorpus = createServerFn({ method: "POST" }).handler(async () => {
   const errors: string[] = [];
   const embedKey = process.env["EMBEDDING_API_KEY"];
@@ -105,81 +69,57 @@ export const ingestCorpus = createServerFn({ method: "POST" }).handler(async () 
       errors: ["EMBEDDING_API_KEY is not set"],
     };
 
-  let rows: { row_idx?: number; row?: unknown }[] = [];
-  let datasetUsed = "";
-  try {
-    const result = await withRetry(async () => {
-      for (const url of [HF_PRIMARY, HF_FALLBACK]) {
-        const res = await fetch(url);
-        if (!res.ok) {
-          console.error("[ingest-corpus] HF fetch not ok", url, res.status, (await res.text()).slice(0, 300));
-          continue;
-        }
-        const json = (await res.json()) as {
-          rows?: { row_idx?: number; row?: unknown }[];
-          error?: string;
-        };
-        if (json.error) console.error("[ingest-corpus] HF error field:", json.error);
-        if (json.rows?.length) return { rows: json.rows, url };
-        console.error("[ingest-corpus] HF returned no rows for", url);
-      }
-      throw new Error("No rows returned from Hugging Face");
-    });
-    rows = result.rows;
-    datasetUsed = result.url;
-  } catch (e) {
-    console.error("[ingest-corpus] HF fetch failed entirely:", e);
-    return {
-      rows_fetched: 0,
-      chunks_created: 0,
-      sample_chunk_text: "",
-      total_chunks_in_table: 0,
-      errors: [String(e)],
-    };
-  }
-
-  console.log("[ingest-corpus] dataset used:", datasetUsed);
-  console.log("[ingest-corpus] rows fetched:", rows.length);
-  const firstRow = rows[0]?.row as Record<string, unknown> | undefined;
-  console.log("[ingest-corpus] first row keys:", firstRow ? Object.keys(firstRow) : "none");
-  console.log("[ingest-corpus] first row full content:", JSON.stringify(firstRow).slice(0, 4000));
+  const { MSMARCO_XI_CORPUS } = await import("@/lib/corpus");
+  const rows = MSMARCO_XI_CORPUS.slice(0, 300);
+  console.log("[ingest-corpus] dataset: ai4bharat/MSMARCO-XI (bundled passages)");
+  console.log("[ingest-corpus] rows available:", MSMARCO_XI_CORPUS.length, "| using:", rows.length);
+  console.log("[ingest-corpus] first row:", JSON.stringify(rows[0]).slice(0, 500));
 
   const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+
+  // Fresh load each time so the table always reflects this dataset.
+  const { error: delError } = await supabaseAdmin
+    .from("chunks")
+    .delete()
+    .not("id", "is", null);
+  if (delError) {
+    console.error("[ingest-corpus] delete error:", JSON.stringify(delError));
+    errors.push(`delete: ${delError.message}`);
+  }
+
   let chunksCreated = 0;
   let sampleChunkText = "";
-  let loggedField = false;
 
-  for (const r of rows.slice(0, 50)) {
-    const { field, texts } = extractPassages(r.row);
-    if (!loggedField) {
-      console.log("[ingest-corpus] passage text field used:", field, "| passages in first row:", texts.length);
-      loggedField = true;
+  // Build all chunks first, then embed/insert in batches.
+  const allChunks: { text: string; source_doc_id: string }[] = [];
+  for (const row of rows) {
+    for (const piece of chunkWords(row.text)) {
+      if (piece.trim()) allChunks.push({ text: piece, source_doc_id: row.id });
     }
-    const passage = texts.slice(0, 3).join("\n\n");
-    if (!passage) {
-      console.warn("[ingest-corpus] no passage text for row", r.row_idx);
-      continue;
-    }
-    const sourceDocId = String(r.row_idx ?? chunksCreated);
-    const pieces = chunkWords(passage);
+  }
+  console.log("[ingest-corpus] chunks to embed:", allChunks.length);
+
+  const BATCH = 20;
+  for (let i = 0; i < allChunks.length; i += BATCH) {
+    const batch = allChunks.slice(i, i + BATCH);
     try {
-      const vectors = await withRetry(() => embed(pieces, embedKey));
+      const vectors = await withRetry(() => embed(batch.map((c) => c.text), embedKey));
       const { error } = await supabaseAdmin.from("chunks").insert(
-        pieces.map((text, i) => ({
-          text,
-          embedding: JSON.stringify(vectors[i]) as unknown as string,
-          source_doc_id: sourceDocId,
+        batch.map((c, j) => ({
+          text: c.text,
+          embedding: JSON.stringify(vectors[j]) as unknown as string,
+          source_doc_id: c.source_doc_id,
         })),
       );
       if (error) {
         console.error("[ingest-corpus] supabase insert error:", JSON.stringify(error));
         errors.push(`insert: ${error.message}`);
       } else {
-        chunksCreated += pieces.length;
-        if (!sampleChunkText) sampleChunkText = pieces[0]!.slice(0, 400);
+        chunksCreated += batch.length;
+        if (!sampleChunkText) sampleChunkText = batch[0]!.text.slice(0, 400);
       }
     } catch (e) {
-      console.error("[ingest-corpus] embedding/insert exception for row", r.row_idx, e);
+      console.error("[ingest-corpus] embedding/insert exception at batch", i, e);
       errors.push(`embed: ${String(e)}`);
     }
   }
@@ -202,6 +142,7 @@ export const ingestCorpus = createServerFn({ method: "POST" }).handler(async () 
     errors,
   };
 });
+
 
 export const debugRetrieval = createServerFn({ method: "POST" })
   .inputValidator((input: { query?: string }) => input ?? {})
