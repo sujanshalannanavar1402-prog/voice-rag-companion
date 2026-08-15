@@ -1,109 +1,33 @@
 import { createServerFn } from "@tanstack/react-start";
+import { EMBED_BATCH_SIZE, buildAllChunks, embed, withRetry } from "@/lib/rag.server";
 
-async function withRetry<T>(fn: () => Promise<T>): Promise<T> {
-  try {
-    return await fn();
-  } catch {
-    return await fn();
-  }
-}
-
-function chunkWords(text: string, size = 200, overlap = 30): string[] {
-  const words = text.split(/\s+/).filter(Boolean);
-  if (words.length <= size) return [words.join(" ")];
-  const chunks: string[] = [];
-  for (let i = 0; i < words.length; i += size - overlap) {
-    chunks.push(words.slice(i, i + size).join(" "));
-    if (i + size >= words.length) break;
-  }
-  return chunks;
-}
-
-async function embed(texts: string[], apiKey: string): Promise<number[][]> {
-  // OpenAI-style keys start with "sk-"; anything else is treated as a Google
-  // Generative Language API key (Gemini embeddings, 1536 dims).
-  if (apiKey.startsWith("sk-")) {
-    const res = await fetch("https://api.openai.com/v1/embeddings", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ model: "text-embedding-3-small", input: texts }),
-    });
-    if (!res.ok) throw new Error(`Embedding failed: ${res.status} ${await res.text()}`);
-    const json = (await res.json()) as { data: { embedding: number[] }[] };
-    return json.data.map((d) => d.embedding);
-  }
-
-  const res = await fetch(
-    "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:batchEmbedContents",
-    {
-      method: "POST",
-      headers: { "x-goog-api-key": apiKey, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        requests: texts.map((t) => ({
-          model: "models/gemini-embedding-001",
-          content: { parts: [{ text: t }] },
-          outputDimensionality: 1536,
-        })),
-      }),
-    },
-  );
-  if (!res.ok) throw new Error(`Embedding failed: ${res.status} ${await res.text()}`);
-  const json = (await res.json()) as { embeddings: { values: number[] }[] };
-  return json.embeddings.map((e) => {
-    // Gemini embeddings are not normalized when a custom dimensionality is used.
-    const norm = Math.sqrt(e.values.reduce((s, v) => s + v * v, 0)) || 1;
-    return e.values.map((v) => v / norm);
-  });
-}
-
-
-export const ingestCorpus = createServerFn({ method: "POST" }).handler(async () => {
-  const errors: string[] = [];
-  const embedKey = process.env["EMBEDDING_API_KEY"];
-  if (!embedKey)
-    return {
-      rows_fetched: 0,
-      chunks_created: 0,
-      sample_chunk_text: "",
-      total_chunks_in_table: 0,
-      errors: ["EMBEDDING_API_KEY is not set"],
-    };
-
-  const { MSMARCO_XI_CORPUS } = await import("@/lib/corpus");
-  const rows = MSMARCO_XI_CORPUS.slice(0, 300);
-  console.log("[ingest-corpus] dataset: ai4bharat/MSMARCO-XI (bundled passages)");
-  console.log("[ingest-corpus] rows available:", MSMARCO_XI_CORPUS.length, "| using:", rows.length);
-  console.log("[ingest-corpus] first row:", JSON.stringify(rows[0]).slice(0, 500));
-
+export const ingestPrepare = createServerFn({ method: "POST" }).handler(async () => {
   const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+  const allChunks = await buildAllChunks();
+  const { error } = await supabaseAdmin.from("chunks").delete().not("id", "is", null);
+  if (error) console.error("[ingest] clear error:", JSON.stringify(error));
+  console.log("[ingest] cleared table; chunks to embed:", allChunks.length);
+  return {
+    total_rows: (await import("@/lib/corpus")).MSMARCO_XI_CORPUS.length,
+    total_chunks: allChunks.length,
+    batch_size: EMBED_BATCH_SIZE,
+    total_batches: Math.ceil(allChunks.length / EMBED_BATCH_SIZE),
+    error: error ? error.message : null,
+  };
+});
 
-  // Fresh load each time so the table always reflects this dataset.
-  const { error: delError } = await supabaseAdmin
-    .from("chunks")
-    .delete()
-    .not("id", "is", null);
-  if (delError) {
-    console.error("[ingest-corpus] delete error:", JSON.stringify(delError));
-    errors.push(`delete: ${delError.message}`);
-  }
-
-  let chunksCreated = 0;
-  let sampleChunkText = "";
-
-  // Build all chunks first, then embed/insert in batches.
-  const allChunks: { text: string; source_doc_id: string }[] = [];
-  for (const row of rows) {
-    for (const piece of chunkWords(row.text)) {
-      if (piece.trim()) allChunks.push({ text: piece, source_doc_id: row.id });
-    }
-  }
-  console.log("[ingest-corpus] chunks to embed:", allChunks.length);
-
-  const BATCH = 20;
-  for (let i = 0; i < allChunks.length; i += BATCH) {
-    const batch = allChunks.slice(i, i + BATCH);
+export const ingestBatch = createServerFn({ method: "POST" })
+  .inputValidator((input: { batchIndex: number }) => input)
+  .handler(async ({ data }) => {
+    const embedKey = process.env["EMBEDDING_API_KEY"];
+    if (!embedKey) return { inserted: 0, attempted: 0, sample: "", error: "EMBEDDING_API_KEY is not set" };
+    const allChunks = await buildAllChunks();
+    const start = data.batchIndex * EMBED_BATCH_SIZE;
+    const batch = allChunks.slice(start, start + EMBED_BATCH_SIZE);
+    if (batch.length === 0) return { inserted: 0, attempted: 0, sample: "", error: null as string | null };
     try {
-      const vectors = await withRetry(() => embed(batch.map((c) => c.text), embedKey));
+      const vectors = await embed(batch.map((c) => c.text), embedKey);
+      const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
       const { error } = await supabaseAdmin.from("chunks").insert(
         batch.map((c, j) => ({
           text: c.text,
@@ -112,37 +36,27 @@ export const ingestCorpus = createServerFn({ method: "POST" }).handler(async () 
         })),
       );
       if (error) {
-        console.error("[ingest-corpus] supabase insert error:", JSON.stringify(error));
-        errors.push(`insert: ${error.message}`);
-      } else {
-        chunksCreated += batch.length;
-        if (!sampleChunkText) sampleChunkText = batch[0]!.text.slice(0, 400);
+        console.error("[ingest] insert error:", JSON.stringify(error));
+        return { inserted: 0, attempted: batch.length, sample: "", error: `insert: ${error.message}` };
       }
+      console.log(`[ingest] batch ${data.batchIndex + 1}: inserted ${batch.length}`);
+      return {
+        inserted: batch.length,
+        attempted: batch.length,
+        sample: batch[0]!.text.slice(0, 400),
+        error: null as string | null,
+      };
     } catch (e) {
-      console.error("[ingest-corpus] embedding/insert exception at batch", i, e);
-      errors.push(`embed: ${String(e)}`);
+      console.error("[ingest] batch failed:", data.batchIndex, e);
+      return { inserted: 0, attempted: batch.length, sample: "", error: `embed: ${String(e)}` };
     }
-  }
+  });
 
-  const { count, error: countError } = await supabaseAdmin
-    .from("chunks")
-    .select("*", { count: "exact", head: true });
-  if (countError) {
-    console.error("[ingest-corpus] count query error:", JSON.stringify(countError));
-    errors.push(`count: ${countError.message}`);
-  }
-
-  console.log("[ingest-corpus] chunks created this run:", chunksCreated, "| total in table:", count);
-
-  return {
-    rows_fetched: rows.length,
-    chunks_created: chunksCreated,
-    sample_chunk_text: sampleChunkText,
-    total_chunks_in_table: count ?? 0,
-    errors,
-  };
+export const chunkCount = createServerFn({ method: "POST" }).handler(async () => {
+  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+  const { count, error } = await supabaseAdmin.from("chunks").select("*", { count: "exact", head: true });
+  return { total_chunks_in_table: count ?? 0, error: error ? error.message : null };
 });
-
 
 export const debugRetrieval = createServerFn({ method: "POST" })
   .inputValidator((input: { query?: string }) => input ?? {})
