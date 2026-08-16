@@ -208,7 +208,7 @@ export const ragAnswer = createServerFn({ method: "POST" })
               {
                 role: "system",
                 content:
-                  "Answer only using the provided context. If the answer isn't in the context, say 'I don't have enough information to answer that.'",
+                  "Answer the question using only the information in the provided context. The context may describe a more specific case of the topic asked about — if so, use it to answer as best you can, noting the specific scope if relevant. Only say 'I don't have enough information to answer that' if the context is genuinely unrelated to the question, not merely more specific or narrowly scoped than the question.",
               },
               { role: "user", content: `Context:\n${sources.join("\n---\n")}\n\nQuestion: ${data.query}` },
             ],
