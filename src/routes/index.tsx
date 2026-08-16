@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useRef, useState } from "react";
-import { corpusStats, debugRetrieval, ingestCorpus, ragAnswer, speechToText } from "@/lib/rag.functions";
+import { corpusStats, debugRetrieval, ingestPrepare, ingestBatch, chunkCount, ragAnswer, speechToText } from "@/lib/rag.functions";
 
 
 export const Route = createFileRoute("/")({
@@ -57,15 +57,21 @@ function encodeWav(chunks: Float32Array[], sampleRate: number): Blob {
   return new Blob([buffer], { type: "audio/wav" });
 }
 
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function Index() {
-  const ingest = useServerFn(ingestCorpus);
+  const prepareFn = useServerFn(ingestPrepare);
+  const batchFn = useServerFn(ingestBatch);
+  const countFn = useServerFn(chunkCount);
   const stt = useServerFn(speechToText);
   const answerFn = useServerFn(ragAnswer);
   const debugFn = useServerFn(debugRetrieval);
   const statsFn = useServerFn(corpusStats);
 
   const [loadStatus, setLoadStatus] = useState("");
-  const [loadResult, setLoadResult] = useState<Awaited<ReturnType<typeof ingestCorpus>> | null>(null);
+  const [loadResult, setLoadResult] = useState<{ total_chunks_in_table: number; errors: string[] } | null>(null);
   const [loading, setLoading] = useState(false);
   const [recording, setRecording] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -91,14 +97,34 @@ function Index() {
     setStatsBusy(false);
   }
 
-
   async function handleLoad() {
     setLoading(true);
-    setLoadStatus("Loading data…");
     setLoadResult(null);
+    const allErrors: string[] = [];
     try {
-      const res = await ingest();
-      setLoadResult(res);
+      setLoadStatus("Preparing ingestion…");
+      const prep = await prepareFn();
+      if (prep.error) allErrors.push(`Prepare: ${prep.error}`);
+      const totalBatches = prep.total_batches;
+
+      for (let batchIndex = 0; batchIndex < totalBatches; batchIndex++) {
+        setLoadStatus(`Embedding batch ${batchIndex + 1} of ${totalBatches}…`);
+        try {
+          const res = await batchFn({ data: { batchIndex } });
+          if (res.error) allErrors.push(`Batch ${batchIndex + 1}: ${res.error}`);
+        } catch (e) {
+          allErrors.push(`Batch ${batchIndex + 1} threw: ${String(e)}`);
+        }
+        if (batchIndex < totalBatches - 1) {
+          await sleep(2000);
+        }
+      }
+
+      setLoadStatus("Finalizing…");
+      const countRes = await countFn();
+      if (countRes.error) allErrors.push(`Count: ${countRes.error}`);
+
+      setLoadResult({ total_chunks_in_table: countRes.total_chunks_in_table, errors: allErrors });
       setLoadStatus("");
     } catch (e) {
       setLoadStatus(`Failed: ${String(e)}`);
@@ -171,7 +197,6 @@ function Index() {
       setAnswer(res.error ? `Error: ${res.error}` : res.answer);
       setTotalMs(res.latency?.total_ms ?? null);
       setRagDebug(res.debug ?? null);
-
     } catch (e) {
       setAnswer(`Error: ${String(e)}`);
     }
@@ -196,11 +221,7 @@ function Index() {
         {loadStatus && <p className="mt-3 text-sm text-muted-foreground">{loadStatus}</p>}
         {loadResult && (
           <div className="mt-4 space-y-1 rounded-lg bg-muted p-4 text-sm text-foreground">
-            <p>Rows fetched: {loadResult.rows_fetched}</p>
-            <p>Chunks created: {loadResult.chunks_created}</p>
             <p>Total chunks in table: {loadResult.total_chunks_in_table}</p>
-            <p className="text-muted-foreground">Sample chunk:</p>
-            <p className="whitespace-pre-wrap text-xs">{loadResult.sample_chunk_text || "(none)"}</p>
             {loadResult.errors.length > 0 && (
               <p className="text-xs text-destructive">Errors: {loadResult.errors.join(" | ")}</p>
             )}
@@ -254,7 +275,6 @@ function Index() {
           </div>
         )}
       </section>
-
 
       <section className="mt-6 rounded-xl border border-border p-5">
         <button
@@ -333,7 +353,6 @@ function Index() {
           </div>
         )}
       </section>
-
     </main>
   );
 }
