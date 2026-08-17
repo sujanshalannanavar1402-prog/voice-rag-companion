@@ -1,6 +1,6 @@
 /** Server-only helpers for the RAG pipeline. */
 
-export const EMBED_BATCH_SIZE = 25;
+export const EMBED_BATCH_SIZE = 100;
 
 export function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
@@ -89,18 +89,31 @@ export function chunkParentChild(text: string, childSize = 60, overlap = 10): st
   return chunkWords(text, childSize, overlap);
 }
 
+let cachedAllChunks: PendingChunk[] | null = null;
+
 /** Deterministic chunk list for the bundled corpus, so batches are stable across calls. */
 export async function buildAllChunks(): Promise<PendingChunk[]> {
+  if (cachedAllChunks) return cachedAllChunks;
   const { MSMARCO_XI_CORPUS } = await import("@/lib/corpus");
   const all: PendingChunk[] = [];
   for (const row of MSMARCO_XI_CORPUS) {
     for (const piece of chunkWords(row.text)) {
       if (piece.trim())
-        all.push({ text: piece, source_doc_id: row.id, chunk_strategy: "fixed_overlap", parent_text: null });
+        all.push({
+          text: piece,
+          source_doc_id: row.id,
+          chunk_strategy: "fixed_overlap",
+          parent_text: null,
+        });
     }
     for (const piece of chunkSemantic(row.text)) {
       if (piece.trim())
-        all.push({ text: piece, source_doc_id: row.id, chunk_strategy: "semantic", parent_text: null });
+        all.push({
+          text: piece,
+          source_doc_id: row.id,
+          chunk_strategy: "semantic",
+          parent_text: null,
+        });
     }
     for (const piece of chunkParentChild(row.text)) {
       if (piece.trim())
@@ -112,9 +125,9 @@ export async function buildAllChunks(): Promise<PendingChunk[]> {
         });
     }
   }
+  cachedAllChunks = all;
   return all;
 }
-
 
 class RateLimitError extends Error {
   constructor(
@@ -189,7 +202,9 @@ export async function embed(texts: string[], apiKey: string, maxRetries = 3): Pr
       if (attempt > maxRetries) throw e;
       if (e instanceof RateLimitError) {
         const wait = e.retryAfterMs + 1000;
-        console.warn(`[embed] rate limited, waiting ${wait}ms before retry ${attempt}/${maxRetries}`);
+        console.warn(
+          `[embed] rate limited, waiting ${wait}ms before retry ${attempt}/${maxRetries}`,
+        );
         await sleep(wait);
       } else {
         console.warn(`[embed] error, retry ${attempt}/${maxRetries}:`, String(e));
@@ -253,7 +268,8 @@ export async function getCorpusCentroid(): Promise<number[] | null> {
     const raw = row.embedding;
     if (!raw) continue;
     try {
-      const parsed = typeof raw === "string" ? (JSON.parse(raw) as number[]) : (raw as unknown as number[]);
+      const parsed =
+        typeof raw === "string" ? (JSON.parse(raw) as number[]) : (raw as unknown as number[]);
       if (Array.isArray(parsed) && parsed.length) vectors.push(parsed);
     } catch {
       /* skip unparsable rows */

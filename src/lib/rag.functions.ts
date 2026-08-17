@@ -43,13 +43,18 @@ export const ingestBatch = createServerFn({ method: "POST" })
   .inputValidator((input: { batchIndex: number }) => input)
   .handler(async ({ data }) => {
     const embedKey = process.env["EMBEDDING_API_KEY"];
-    if (!embedKey) return { inserted: 0, attempted: 0, sample: "", error: "EMBEDDING_API_KEY is not set" };
+    if (!embedKey)
+      return { inserted: 0, attempted: 0, sample: "", error: "EMBEDDING_API_KEY is not set" };
     const allChunks = await buildAllChunks();
     const start = data.batchIndex * EMBED_BATCH_SIZE;
     const batch = allChunks.slice(start, start + EMBED_BATCH_SIZE);
-    if (batch.length === 0) return { inserted: 0, attempted: 0, sample: "", error: null as string | null };
+    if (batch.length === 0)
+      return { inserted: 0, attempted: 0, sample: "", error: null as string | null };
     try {
-      const vectors = await embed(batch.map((c) => c.text), embedKey);
+      const vectors = await embed(
+        batch.map((c) => c.text),
+        embedKey,
+      );
       const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
       const { error } = await supabaseAdmin.from("chunks").insert(
         batch.map((c, j) => ({
@@ -60,7 +65,12 @@ export const ingestBatch = createServerFn({ method: "POST" })
       );
       if (error) {
         console.error("[ingest] insert error:", JSON.stringify(error));
-        return { inserted: 0, attempted: batch.length, sample: "", error: `insert: ${error.message}` };
+        return {
+          inserted: 0,
+          attempted: batch.length,
+          sample: "",
+          error: `insert: ${error.message}`,
+        };
       }
       console.log(`[ingest] batch ${data.batchIndex + 1}: inserted ${batch.length}`);
       return {
@@ -77,7 +87,9 @@ export const ingestBatch = createServerFn({ method: "POST" })
 
 export const chunkCount = createServerFn({ method: "POST" }).handler(async () => {
   const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-  const { count, error } = await supabaseAdmin.from("chunks").select("*", { count: "exact", head: true });
+  const { count, error } = await supabaseAdmin
+    .from("chunks")
+    .select("*", { count: "exact", head: true });
   return { total_chunks_in_table: count ?? 0, error: error ? error.message : null };
 });
 
@@ -97,10 +109,12 @@ export const debugRetrieval = createServerFn({ method: "POST" })
       if (error) throw new Error(error.message);
       return {
         query,
-        matches: (matches ?? []).map((m: { text: string; similarity: number; source_doc_id: string | null }) => {
-          const { id, strategy } = parseSourceDocId(m.source_doc_id);
-          return { text: m.text, similarity: m.similarity, source_doc_id: `${id} [${strategy}]` };
-        }),
+        matches: (matches ?? []).map(
+          (m: { text: string; similarity: number; source_doc_id: string | null }) => {
+            const { id, strategy } = parseSourceDocId(m.source_doc_id);
+            return { text: m.text, similarity: m.similarity, source_doc_id: `${id} [${strategy}]` };
+          },
+        ),
       };
     } catch (e) {
       console.error("[debug-retrieval] failed:", e);
@@ -116,7 +130,11 @@ export const speechToText = createServerFn({ method: "POST" })
     try {
       const bytes = Uint8Array.from(atob(data.audioBase64), (c) => c.charCodeAt(0));
       const form = new FormData();
-      form.append("file", new Blob([bytes], { type: data.mimeType ?? "audio/wav" }), "recording.wav");
+      form.append(
+        "file",
+        new Blob([bytes], { type: data.mimeType ?? "audio/wav" }),
+        "recording.wav",
+      );
       form.append("model", "saarika:v2.5");
       const res = await withRetry(async () => {
         const r = await fetch("https://api.sarvam.ai/speech-to-text", {
@@ -195,9 +213,12 @@ export const ragAnswer = createServerFn({ method: "POST" })
       return { answer: "", sources: [], latency: null, debug, error: "Missing API keys" };
     }
 
-    const logRun = async (
-      latency: { stt_ms: number; retrieval_ms: number; generation_ms: number; total_ms: number },
-    ) => {
+    const logRun = async (latency: {
+      stt_ms: number;
+      retrieval_ms: number;
+      generation_ms: number;
+      total_ms: number;
+    }) => {
       const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
       await supabaseAdmin.from("latency_logs").insert({
         query_text: data.query,
@@ -259,7 +280,9 @@ export const ragAnswer = createServerFn({ method: "POST" })
         }
         debug.notes.push(`Centroid similarity ${sim.toFixed(3)} passed the off-topic threshold.`);
       } else {
-        debug.notes.push("Corpus centroid unavailable (no embeddings loaded) — off-topic check skipped.");
+        debug.notes.push(
+          "Corpus centroid unavailable (no embeddings loaded) — off-topic check skipped.",
+        );
       }
 
       const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
@@ -290,7 +313,8 @@ export const ragAnswer = createServerFn({ method: "POST" })
         source_doc_id: `${m.source_doc_id} [${m.chunk_strategy}]`,
         preview: m.preview,
       }));
-      if (rows.length === 0) debug.notes.push("Retrieval returned 0 chunks — the chunks table may be empty.");
+      if (rows.length === 0)
+        debug.notes.push("Retrieval returned 0 chunks — the chunks table may be empty.");
       const retrieval_ms = Date.now() - retrievalStart;
 
       const generationStart = Date.now();
@@ -381,8 +405,16 @@ export const latencyStats = createServerFn({ method: "POST" }).handler(async () 
       grounded_count: groundedCount,
       ungrounded_count: ungroundedCount,
       stages: {
-        total_ms: { p50: percentile(totals, 50), p70: percentile(totals, 70), p100: percentile(totals, 100) },
-        stt_ms: { p50: percentile(stts, 50), p70: percentile(stts, 70), p100: percentile(stts, 100) },
+        total_ms: {
+          p50: percentile(totals, 50),
+          p70: percentile(totals, 70),
+          p100: percentile(totals, 100),
+        },
+        stt_ms: {
+          p50: percentile(stts, 50),
+          p70: percentile(stts, 70),
+          p100: percentile(stts, 100),
+        },
         retrieval_ms: {
           p50: percentile(retrievals, 50),
           p70: percentile(retrievals, 70),
