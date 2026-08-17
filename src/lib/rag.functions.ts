@@ -1,5 +1,15 @@
 import { createServerFn } from "@tanstack/react-start";
-import { EMBED_BATCH_SIZE, buildAllChunks, embed, withRetry } from "@/lib/rag.server";
+import {
+  EMBED_BATCH_SIZE,
+  OFF_TOPIC_THRESHOLD,
+  buildAllChunks,
+  checkGroundedness,
+  cosineSimilarity,
+  embed,
+  getCorpusCentroid,
+  matchUnsafe,
+  withRetry,
+} from "@/lib/rag.server";
 
 export const ingestPrepare = createServerFn({ method: "POST" }).handler(async () => {
   const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
