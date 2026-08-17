@@ -119,9 +119,11 @@ export type RagDebug = {
   guardrail_ran: boolean;
   groundedness_ran: boolean;
   groundedness_result: "YES" | "NO" | null;
+  grounded: boolean | null;
   retrieved: { similarity: number | null; source_doc_id: string | null; preview: string }[];
   notes: string[];
 };
+
 
 export const corpusStats = createServerFn({ method: "POST" }).handler(async () => {
   try {
