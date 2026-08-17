@@ -1,22 +1,38 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
-import { useRef, useState } from "react";
-import { corpusStats, debugRetrieval, ingestPrepare, ingestBatch, chunkCount, ragAnswer, speechToText } from "@/lib/rag.functions";
-
+import { useEffect, useRef, useState } from "react";
+import {
+  corpusStats,
+  debugRetrieval,
+  ingestPrepare,
+  ingestBatch,
+  chunkCount,
+  ragAnswer,
+  speechToText,
+  RagDebug,
+} from "@/lib/rag.functions";
+import { Navbar } from "@/components/voice-rag/Navbar";
+import { HeroSection } from "@/components/voice-rag/HeroSection";
+import { VoiceInteractionCard } from "@/components/voice-rag/VoiceInteractionCard";
+import { TranscriptCard } from "@/components/voice-rag/TranscriptCard";
+import { AnswerCard } from "@/components/voice-rag/AnswerCard";
+import { SourcesAccordion } from "@/components/voice-rag/SourcesAccordion";
+import { KnowledgeBaseDialog } from "@/components/voice-rag/KnowledgeBaseDialog";
 
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
-      { title: "Voice RAG MVP — Ask questions by voice" },
+      { title: "Voice RAG Companion — Speak Naturally, Get Grounded Answers" },
       {
         name: "description",
         content:
-          "A minimal voice-enabled retrieval augmented generation demo: load a corpus, speak a question, get a grounded answer with latency.",
+          "A modern voice-enabled retrieval augmented generation companion: speak naturally, retrieve verified knowledge, and receive grounded answers with sub-second latency.",
       },
-      { property: "og:title", content: "Voice RAG MVP — Ask questions by voice" },
+      { property: "og:title", content: "Voice RAG Companion" },
       {
         property: "og:description",
-        content: "Load a corpus, speak a question, get a grounded answer with latency timings.",
+        content:
+          "Speak naturally, retrieve verified knowledge, and receive grounded answers with sub-second latency.",
       },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
@@ -71,26 +87,62 @@ function Index() {
   const statsFn = useServerFn(corpusStats);
 
   const [loadStatus, setLoadStatus] = useState("");
-  const [loadResult, setLoadResult] = useState<{ total_chunks_in_table: number; errors: string[] } | null>(null);
+  const [loadResult, setLoadResult] = useState<{
+    total_chunks_in_table: number;
+    errors: string[];
+  } | null>(null);
+  const [cachedChunkCount, setCachedChunkCount] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
+  const [kbDialogOpen, setKbDialogOpen] = useState(false);
+
   const [recording, setRecording] = useState(false);
   const [busy, setBusy] = useState(false);
   const [transcript, setTranscript] = useState("");
   const [answer, setAnswer] = useState("");
+  const [sources, setSources] = useState<string[]>([]);
+  const [latency, setLatency] = useState<{
+    stt_ms: number;
+    retrieval_ms: number;
+    generation_ms: number;
+    total_ms: number;
+  } | null>(null);
   const [totalMs, setTotalMs] = useState<number | null>(null);
+  const [ragDebug, setRagDebug] = useState<RagDebug | null>(null);
+
   const [debugBusy, setDebugBusy] = useState(false);
-  const [debugResult, setDebugResult] = useState<Awaited<ReturnType<typeof debugRetrieval>> | null>(null);
-  const [ragDebug, setRagDebug] = useState<Awaited<ReturnType<typeof ragAnswer>>["debug"] | null>(null);
-  const [showDebug, setShowDebug] = useState(false);
+  const [debugResult, setDebugResult] = useState<Awaited<ReturnType<typeof debugRetrieval>> | null>(
+    null,
+  );
   const [stats, setStats] = useState<Awaited<ReturnType<typeof corpusStats>> | null>(null);
   const [statsBusy, setStatsBusy] = useState(false);
 
   const recorder = useRef<{ stop: () => Promise<Blob> } | null>(null);
 
+  // Fetch initial chunk count on mount
+  useEffect(() => {
+    let isMounted = true;
+    countFn()
+      .then((res) => {
+        if (isMounted && !res.error) {
+          setCachedChunkCount(res.total_chunks_in_table);
+        }
+      })
+      .catch((e) => {
+        console.warn("Could not retrieve initial chunk count:", e);
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
   async function handleStats() {
     setStatsBusy(true);
     try {
-      setStats(await statsFn());
+      const res = await statsFn();
+      setStats(res);
+      if (res && typeof res.total_chunks === "number") {
+        setCachedChunkCount(res.total_chunks);
+      }
     } catch (e) {
       setStats({ total_chunks: 0, samples: [], error: String(e) });
     }
@@ -107,17 +159,30 @@ function Index() {
       if (prep.error) allErrors.push(`Prepare: ${prep.error}`);
       const totalBatches = prep.total_batches;
 
-      for (let batchIndex = 0; batchIndex < totalBatches; batchIndex++) {
-        setLoadStatus(`Embedding batch ${batchIndex + 1} of ${totalBatches}…`);
-        try {
-          const res = await batchFn({ data: { batchIndex } });
-          if (res.error) allErrors.push(`Batch ${batchIndex + 1}: ${res.error}`);
-        } catch (e) {
-          allErrors.push(`Batch ${batchIndex + 1} threw: ${String(e)}`);
-        }
-        if (batchIndex < totalBatches - 1) {
-          await sleep(2000);
-        }
+      if (totalBatches > 0) {
+        const CONCURRENCY = 4;
+        let completedBatches = 0;
+        const queue = Array.from({ length: totalBatches }, (_, i) => i);
+
+        const worker = async () => {
+          while (queue.length > 0) {
+            const batchIndex = queue.shift();
+            if (batchIndex === undefined) break;
+
+            try {
+              const res = await batchFn({ data: { batchIndex } });
+              if (res.error) allErrors.push(`Batch ${batchIndex + 1}: ${res.error}`);
+            } catch (e) {
+              allErrors.push(`Batch ${batchIndex + 1} threw: ${String(e)}`);
+            }
+
+            completedBatches++;
+            setLoadStatus(`Embedding batch ${completedBatches} of ${totalBatches}…`);
+          }
+        };
+
+        const workers = Array.from({ length: Math.min(CONCURRENCY, totalBatches) }, () => worker());
+        await Promise.all(workers);
       }
 
       setLoadStatus("Finalizing…");
@@ -125,6 +190,7 @@ function Index() {
       if (countRes.error) allErrors.push(`Count: ${countRes.error}`);
 
       setLoadResult({ total_chunks_in_table: countRes.total_chunks_in_table, errors: allErrors });
+      setCachedChunkCount(countRes.total_chunks_in_table);
       setLoadStatus("");
     } catch (e) {
       setLoadStatus(`Failed: ${String(e)}`);
@@ -132,37 +198,45 @@ function Index() {
     setLoading(false);
   }
 
-  async function handleDebugRetrieval() {
+  async function handleDebugRetrieval(query?: string) {
     setDebugBusy(true);
     setDebugResult(null);
+    const q = query || "What is the boiling point of water?";
     try {
-      setDebugResult(await debugFn({ data: { query: "What is the boiling point of water?" } }));
+      setDebugResult(await debugFn({ data: { query: q } }));
     } catch (e) {
-      setDebugResult({ query: "What is the boiling point of water?", matches: [], error: String(e) });
+      setDebugResult({ query: q, matches: [], error: String(e) });
     }
     setDebugBusy(false);
   }
 
   async function startRecording() {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    const ctx = new AudioContext();
-    const source = ctx.createMediaStreamSource(stream);
-    const node = ctx.createScriptProcessor(4096, 1, 1);
-    const chunks: Float32Array[] = [];
-    node.onaudioprocess = (e) => chunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
-    source.connect(node);
-    node.connect(ctx.destination);
-    recorder.current = {
-      stop: async () => {
-        stream.getTracks().forEach((t) => t.stop());
-        node.disconnect();
-        source.disconnect();
-        const blob = encodeWav(chunks, ctx.sampleRate);
-        await ctx.close();
-        return blob;
-      },
-    };
-    setRecording(true);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const ctx = new AudioContext();
+      const source = ctx.createMediaStreamSource(stream);
+      const node = ctx.createScriptProcessor(4096, 1, 1);
+      const chunks: Float32Array[] = [];
+      node.onaudioprocess = (e) => chunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+      source.connect(node);
+      node.connect(ctx.destination);
+      recorder.current = {
+        stop: async () => {
+          stream.getTracks().forEach((t) => t.stop());
+          node.disconnect();
+          source.disconnect();
+          const blob = encodeWav(chunks, ctx.sampleRate);
+          await ctx.close();
+          return blob;
+        },
+      };
+      setRecording(true);
+    } catch (e) {
+      console.error("Microphone access failed:", e);
+      setTranscript(
+        "Microphone access was denied or is unavailable. Please check browser permissions.",
+      );
+    }
   }
 
   async function stopRecording() {
@@ -174,8 +248,10 @@ function Index() {
       return;
     }
     setBusy(true);
-    setTranscript("Transcribing…");
+    setTranscript("Transcribing voice…");
     setAnswer("");
+    setSources([]);
+    setLatency(null);
     setTotalMs(null);
     setRagDebug(null);
     try {
@@ -188,13 +264,17 @@ function Index() {
       const sttRes = await stt({ data: { audioBase64: base64, mimeType: "audio/wav" } });
       const sttMs = Math.round(performance.now() - sttStart);
       if (!sttRes.transcript) {
-        setTranscript(sttRes.error ? `Speech-to-text failed: ${sttRes.error}` : "No speech detected.");
+        setTranscript(
+          sttRes.error ? `Speech-to-text failed: ${sttRes.error}` : "No speech detected.",
+        );
         setBusy(false);
         return;
       }
       setTranscript(sttRes.transcript);
       const res = await answerFn({ data: { query: sttRes.transcript, sttMs } });
       setAnswer(res.error ? `Error: ${res.error}` : res.answer);
+      setSources(res.sources ?? []);
+      setLatency(res.latency ?? null);
       setTotalMs(res.latency?.total_ms ?? null);
       setRagDebug(res.debug ?? null);
     } catch (e) {
@@ -204,155 +284,71 @@ function Index() {
   }
 
   return (
-    <main className="mx-auto min-h-screen max-w-2xl px-6 py-14">
-      <h1 className="text-2xl font-semibold tracking-tight text-foreground">Voice RAG MVP</h1>
-      <p className="mt-1 text-sm text-muted-foreground">
-        Load a corpus, then ask a question with your voice.
-      </p>
+    <div className="relative min-h-screen bg-background text-foreground flex flex-col selection:bg-indigo-500/20 selection:text-indigo-200">
+      {/* Top Navbar */}
+      <Navbar
+        isRecording={recording}
+        isBusy={busy}
+        chunkCount={cachedChunkCount}
+        onOpenKnowledgeBase={() => setKbDialogOpen(true)}
+      />
 
-      <section className="mt-8 rounded-xl border border-border p-5">
-        <button
-          onClick={handleLoad}
-          disabled={loading}
-          className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
-        >
-          {loading ? "Loading…" : "Load Data"}
-        </button>
-        {loadStatus && <p className="mt-3 text-sm text-muted-foreground">{loadStatus}</p>}
-        {loadResult && (
-          <div className="mt-4 space-y-1 rounded-lg bg-muted p-4 text-sm text-foreground">
-            <p>Total chunks in table: {loadResult.total_chunks_in_table}</p>
-            {loadResult.errors.length > 0 && (
-              <p className="text-xs text-destructive">Errors: {loadResult.errors.join(" | ")}</p>
+      {/* Main Content Area */}
+      <main className="flex-1 w-full max-w-5xl mx-auto px-4 sm:px-6 py-6 sm:py-10 flex flex-col items-center gap-8 sm:gap-10">
+        {/* Hero Section */}
+        <HeroSection />
+
+        {/* Centerpiece Voice Interaction Card */}
+        <VoiceInteractionCard
+          recording={recording}
+          busy={busy}
+          onStartRecording={startRecording}
+          onStopRecording={stopRecording}
+        />
+
+        {/* Results Stream (Transcript, Answer, Sources) */}
+        {(transcript || answer || (sources && sources.length > 0)) && (
+          <div className="w-full space-y-5 sm:space-y-6">
+            {/* Transcript Card */}
+            {transcript && <TranscriptCard transcript={transcript} />}
+
+            {/* Answer Card */}
+            {answer && (
+              <AnswerCard
+                answer={answer}
+                latency={latency}
+                totalMs={totalMs}
+                ragDebug={ragDebug}
+                sourcesCount={sources.length}
+              />
             )}
+
+            {/* Sources Accordion */}
+            {sources.length > 0 && <SourcesAccordion sources={sources} ragDebug={ragDebug} />}
           </div>
         )}
+      </main>
 
-        <button
-          onClick={handleDebugRetrieval}
-          disabled={debugBusy}
-          className="mt-4 rounded-md border border-border px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-muted disabled:opacity-50"
-        >
-          {debugBusy ? "Testing…" : "Debug: Test Retrieval"}
-        </button>
-        {debugResult && (
-          <div className="mt-3 space-y-2 rounded-lg bg-muted p-4 text-xs">
-            <p className="text-muted-foreground">Query: {debugResult.query}</p>
-            {debugResult.error && <p className="text-destructive">{debugResult.error}</p>}
-            {debugResult.matches.length === 0 && !debugResult.error && <p>No matches returned.</p>}
-            {debugResult.matches.map((m, i) => (
-              <div key={i} className="border-t border-border pt-2">
-                <p className="text-muted-foreground">
-                  #{i + 1} · similarity {m.similarity?.toFixed(4)} · doc {m.source_doc_id ?? "—"}
-                </p>
-                <p className="whitespace-pre-wrap text-foreground">{m.text}</p>
-              </div>
-            ))}
-          </div>
-        )}
-      </section>
+      {/* Knowledge Base Modal / Sheet */}
+      <KnowledgeBaseDialog
+        open={kbDialogOpen}
+        onOpenChange={setKbDialogOpen}
+        loading={loading}
+        loadStatus={loadStatus}
+        loadResult={loadResult}
+        onLoad={handleLoad}
+        stats={stats}
+        statsBusy={statsBusy}
+        onFetchStats={handleStats}
+        debugResult={debugResult}
+        debugBusy={debugBusy}
+        onDebugRetrieval={handleDebugRetrieval}
+      />
 
-      <section className="mt-6 rounded-xl border border-border p-5">
-        <div className="flex items-center justify-between">
-          <h2 className="text-sm font-medium text-foreground">Corpus Stats</h2>
-          <button
-            onClick={handleStats}
-            disabled={statsBusy}
-            className="rounded-md border border-border px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-muted disabled:opacity-50"
-          >
-            {statsBusy ? "Loading…" : "Refresh"}
-          </button>
-        </div>
-        {stats && (
-          <div className="mt-3 space-y-2 rounded-lg bg-muted p-4 text-xs">
-            {stats.error && <p className="text-destructive">{stats.error}</p>}
-            <p>Total chunks: {stats.total_chunks}</p>
-            {stats.samples.map((s, i) => (
-              <p key={s.id} className="whitespace-pre-wrap text-muted-foreground">
-                #{i + 1} · doc {s.source_doc_id ?? "—"} · {s.preview}
-              </p>
-            ))}
-          </div>
-        )}
-      </section>
-
-      <section className="mt-6 rounded-xl border border-border p-5">
-        <button
-          onClick={recording ? stopRecording : startRecording}
-          disabled={busy}
-          className={`flex h-16 w-16 items-center justify-center rounded-full text-2xl transition-colors disabled:opacity-50 ${
-            recording ? "bg-destructive text-destructive-foreground" : "bg-secondary text-secondary-foreground"
-          }`}
-          aria-label={recording ? "Stop recording" : "Start recording"}
-        >
-          {recording ? "■" : "🎤"}
-        </button>
-        <p className="mt-3 text-xs text-muted-foreground">
-          {recording ? "Recording — tap to stop" : busy ? "Thinking…" : "Tap the mic and ask a question"}
-        </p>
-
-        {transcript && (
-          <p className="mt-5 text-sm text-foreground">
-            <span className="text-muted-foreground">You said: </span>
-            {transcript}
-          </p>
-        )}
-
-        {answer && (
-          <div className="mt-4 rounded-lg bg-muted p-4">
-            <p className="whitespace-pre-wrap text-sm text-foreground">{answer}</p>
-            {totalMs !== null && (
-              <p className="mt-2 text-xs text-muted-foreground">{totalMs} ms total</p>
-            )}
-          </div>
-        )}
-
-        {ragDebug && (
-          <div className="mt-4 rounded-lg border border-border p-4 text-xs">
-            <button
-              onClick={() => setShowDebug((v) => !v)}
-              className="text-xs font-medium text-foreground"
-              aria-expanded={showDebug}
-            >
-              {showDebug ? "▾" : "▸"} Debug Info
-            </button>
-            {showDebug && (
-              <div className="mt-3 space-y-2">
-                <p>
-                  Refused: {String(ragDebug.refused)}
-                  {ragDebug.refused ? ` · reason: ${ragDebug.refusal_reason ?? "unknown"}` : ""}
-                </p>
-                <p>Guardrail ran: {String(ragDebug.guardrail_ran)}</p>
-                <p>
-                  Centroid similarity:{" "}
-                  {ragDebug.centroid_similarity === null ? "n/a" : ragDebug.centroid_similarity.toFixed(4)}
-                </p>
-                <p>
-                  Groundedness check ran: {String(ragDebug.groundedness_ran)} · result:{" "}
-                  {ragDebug.groundedness_result ?? "n/a"}
-                </p>
-                <div className="border-t border-border pt-2">
-                  <p className="text-muted-foreground">Top-{ragDebug.retrieved.length} retrieved chunks:</p>
-                  {ragDebug.retrieved.length === 0 && <p>None returned.</p>}
-                  {ragDebug.retrieved.map((r, i) => (
-                    <p key={i} className="mt-1 whitespace-pre-wrap">
-                      #{i + 1} · sim {r.similarity === null ? "—" : r.similarity.toFixed(4)} · doc{" "}
-                      {r.source_doc_id ?? "—"} · {r.preview}
-                    </p>
-                  ))}
-                </div>
-                {ragDebug.notes.length > 0 && (
-                  <div className="border-t border-border pt-2 text-muted-foreground">
-                    {ragDebug.notes.map((n, i) => (
-                      <p key={i}>• {n}</p>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        )}
-      </section>
-    </main>
+      {/* Footer */}
+      <footer className="w-full border-t border-border/30 py-6 text-center text-xs text-muted-foreground/70">
+        <p>Voice RAG Companion · MS MARCO Knowledge Retrieval · Sub-second Latency</p>
+      </footer>
+    </div>
   );
 }
