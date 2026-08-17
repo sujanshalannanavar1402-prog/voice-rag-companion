@@ -1,5 +1,15 @@
 import { createServerFn } from "@tanstack/react-start";
-import { EMBED_BATCH_SIZE, buildAllChunks, embed, withRetry } from "@/lib/rag.server";
+import {
+  EMBED_BATCH_SIZE,
+  OFF_TOPIC_THRESHOLD,
+  buildAllChunks,
+  checkGroundedness,
+  cosineSimilarity,
+  embed,
+  getCorpusCentroid,
+  matchUnsafe,
+  withRetry,
+} from "@/lib/rag.server";
 
 export const ingestPrepare = createServerFn({ method: "POST" }).handler(async () => {
   const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
@@ -119,9 +129,11 @@ export type RagDebug = {
   guardrail_ran: boolean;
   groundedness_ran: boolean;
   groundedness_result: "YES" | "NO" | null;
+  grounded: boolean | null;
   retrieved: { similarity: number | null; source_doc_id: string | null; preview: string }[];
   notes: string[];
 };
+
 
 export const corpusStats = createServerFn({ method: "POST" }).handler(async () => {
   try {
@@ -162,11 +174,9 @@ export const ragAnswer = createServerFn({ method: "POST" })
       guardrail_ran: false,
       groundedness_ran: false,
       groundedness_result: null,
+      grounded: null,
       retrieved: [],
-      notes: [
-        "No off-topic/unsafe guardrail is implemented in this pipeline, so refused is always false.",
-        "No groundedness (YES/NO) check is implemented, so it never runs.",
-      ],
+      notes: [],
     };
     const embedKey = process.env["EMBEDDING_API_KEY"];
     const lovableKey = process.env["LOVABLE_API_KEY"];
@@ -174,9 +184,73 @@ export const ragAnswer = createServerFn({ method: "POST" })
       return { answer: "", sources: [], latency: null, debug, error: "Missing API keys" };
     }
 
+    const logRun = async (
+      latency: { stt_ms: number; retrieval_ms: number; generation_ms: number; total_ms: number },
+    ) => {
+      const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+      await supabaseAdmin.from("latency_logs").insert({
+        query_text: data.query,
+        ...latency,
+        refused: debug.refused,
+        refusal_reason: debug.refusal_reason,
+        grounded: debug.grounded,
+      });
+    };
+
     try {
+      debug.guardrail_ran = true;
+
+      // Guardrail 1: unsafe keyword list.
+      const unsafeHit = matchUnsafe(data.query);
+      if (unsafeHit) {
+        debug.refused = true;
+        debug.refusal_reason = "unsafe";
+        debug.notes.push(`Blocked by unsafe keyword list (matched "${unsafeHit}").`);
+        const total_ms = Date.now() - started + (data.sttMs ?? 0);
+        const latency = { stt_ms: data.sttMs ?? 0, retrieval_ms: 0, generation_ms: 0, total_ms };
+        await logRun(latency);
+        return {
+          answer: "I can't help with that request.",
+          sources: [],
+          latency,
+          debug,
+        };
+      }
+
       const retrievalStart = Date.now();
       const [queryVector] = await withRetry(() => embed([data.query], embedKey));
+
+      // Guardrail 2: off-topic check against the corpus centroid.
+      const centroid = await getCorpusCentroid();
+      if (centroid && queryVector) {
+        const sim = cosineSimilarity(queryVector, centroid);
+        debug.centroid_similarity = sim;
+        if (sim < OFF_TOPIC_THRESHOLD) {
+          debug.refused = true;
+          debug.refusal_reason = "off_topic";
+          debug.notes.push(
+            `Centroid similarity ${sim.toFixed(3)} is below the ${OFF_TOPIC_THRESHOLD} off-topic threshold.`,
+          );
+          const total_ms = Date.now() - started + (data.sttMs ?? 0);
+          const latency = {
+            stt_ms: data.sttMs ?? 0,
+            retrieval_ms: Date.now() - retrievalStart,
+            generation_ms: 0,
+            total_ms,
+          };
+          await logRun(latency);
+          return {
+            answer: "That question looks outside the topics covered by the loaded corpus.",
+            sources: [],
+            latency,
+            debug,
+          };
+        }
+        debug.notes.push(`Centroid similarity ${sim.toFixed(3)} passed the off-topic threshold.`);
+      } else {
+        debug.notes.push("Corpus centroid unavailable (no embeddings loaded) — off-topic check skipped.");
+      }
+
       const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
       const { data: matches, error } = await supabaseAdmin.rpc("match_chunks", {
         query_embedding: JSON.stringify(queryVector) as unknown as string,
@@ -198,6 +272,7 @@ export const ragAnswer = createServerFn({ method: "POST" })
       const retrieval_ms = Date.now() - retrievalStart;
 
       const generationStart = Date.now();
+      const context = sources.join("\n---\n");
       const completion = await withRetry(async () => {
         const r = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
           method: "POST",
@@ -210,7 +285,7 @@ export const ragAnswer = createServerFn({ method: "POST" })
                 content:
                   "Answer the question using only the information in the provided context. The context may describe a more specific case of the topic asked about — if so, use it to answer as best you can, noting the specific scope if relevant. Only say 'I don't have enough information to answer that' if the context is genuinely unrelated to the question, not merely more specific or narrowly scoped than the question.",
               },
-              { role: "user", content: `Context:\n${sources.join("\n---\n")}\n\nQuestion: ${data.query}` },
+              { role: "user", content: `Context:\n${context}\n\nQuestion: ${data.query}` },
             ],
           }),
         });
@@ -218,14 +293,36 @@ export const ragAnswer = createServerFn({ method: "POST" })
         return r;
       });
       const json = (await completion.json()) as { choices?: { message?: { content?: string } }[] };
-      const answer = json.choices?.[0]?.message?.content ?? "";
+      let answer = json.choices?.[0]?.message?.content ?? "";
+
+      // Guardrail 3: groundedness check on the generated answer.
+      if (answer.trim() && sources.length > 0) {
+        try {
+          const verdict = await checkGroundedness(answer, context, lovableKey);
+          debug.groundedness_ran = true;
+          debug.groundedness_result = verdict;
+          debug.grounded = verdict === "YES";
+          if (verdict === "NO") {
+            answer = "I don't have enough information to answer that.";
+            debug.notes.push("Groundedness check returned NO — answer overridden.");
+          } else {
+            debug.notes.push("Groundedness check returned YES.");
+          }
+        } catch (e) {
+          debug.notes.push(`Groundedness check failed: ${String(e)}`);
+        }
+      } else {
+        debug.notes.push("Groundedness check skipped (empty answer or no retrieved context).");
+      }
+
       const generation_ms = Date.now() - generationStart;
       const total_ms = Date.now() - started + (data.sttMs ?? 0);
 
       const latency = { stt_ms: data.sttMs ?? 0, retrieval_ms, generation_ms, total_ms };
-      await supabaseAdmin.from("latency_logs").insert({ query_text: data.query, ...latency });
+      await logRun(latency);
 
       return { answer, sources, latency, debug };
+
     } catch (e) {
       debug.notes.push(`Pipeline threw: ${String(e)}`);
       return { answer: "", sources: [], latency: null, debug, error: String(e) };

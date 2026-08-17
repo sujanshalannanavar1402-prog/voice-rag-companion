@@ -121,3 +121,99 @@ export async function embed(texts: string[], apiKey: string, maxRetries = 3): Pr
     }
   }
 }
+
+/* ---------- Guardrails ---------- */
+
+export const UNSAFE_KEYWORDS = [
+  "bomb",
+  "explosive",
+  "make a gun",
+  "kill someone",
+  "how to kill",
+  "suicide",
+  "self-harm",
+  "child porn",
+  "meth",
+  "poison someone",
+  "hack into",
+  "credit card dump",
+];
+
+export function matchUnsafe(query: string): string | null {
+  const q = query.toLowerCase();
+  return UNSAFE_KEYWORDS.find((k) => q.includes(k)) ?? null;
+}
+
+export const OFF_TOPIC_THRESHOLD = 0.3;
+
+export function cosineSimilarity(a: number[], b: number[]): number {
+  let dot = 0;
+  let na = 0;
+  let nb = 0;
+  for (let i = 0; i < Math.min(a.length, b.length); i++) {
+    dot += a[i]! * b[i]!;
+    na += a[i]! * a[i]!;
+    nb += b[i]! * b[i]!;
+  }
+  const denom = Math.sqrt(na) * Math.sqrt(nb);
+  return denom === 0 ? 0 : dot / denom;
+}
+
+let centroidCache: { vector: number[]; at: number } | null = null;
+const CENTROID_TTL_MS = 10 * 60 * 1000;
+
+/** Mean of a sample of stored chunk embeddings, cached in-process. */
+export async function getCorpusCentroid(): Promise<number[] | null> {
+  if (centroidCache && Date.now() - centroidCache.at < CENTROID_TTL_MS) return centroidCache.vector;
+  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+  const { data, error } = await supabaseAdmin.from("chunks").select("embedding").limit(200);
+  if (error) {
+    console.error("[guardrail] centroid load failed:", error.message);
+    return null;
+  }
+  const vectors: number[][] = [];
+  for (const row of data ?? []) {
+    const raw = row.embedding;
+    if (!raw) continue;
+    try {
+      const parsed = typeof raw === "string" ? (JSON.parse(raw) as number[]) : (raw as unknown as number[]);
+      if (Array.isArray(parsed) && parsed.length) vectors.push(parsed);
+    } catch {
+      /* skip unparsable rows */
+    }
+  }
+  if (vectors.length === 0) return null;
+  const dims = vectors[0]!.length;
+  const sum = new Array<number>(dims).fill(0);
+  for (const v of vectors) for (let i = 0; i < dims; i++) sum[i]! += v[i] ?? 0;
+  const centroid = sum.map((s) => s / vectors.length);
+  centroidCache = { vector: centroid, at: Date.now() };
+  return centroid;
+}
+
+/** Asks the LLM whether the answer is fully supported by the context. Returns "YES" | "NO". */
+export async function checkGroundedness(
+  answer: string,
+  context: string,
+  lovableKey: string,
+): Promise<"YES" | "NO"> {
+  const r = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${lovableKey}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: "google/gemini-3.5-flash",
+      messages: [
+        {
+          role: "system",
+          content:
+            "You verify groundedness. Reply with exactly one word: YES if every factual claim in the ANSWER is supported by the CONTEXT, otherwise NO.",
+        },
+        { role: "user", content: `CONTEXT:\n${context}\n\nANSWER:\n${answer}` },
+      ],
+    }),
+  });
+  if (!r.ok) throw new Error(`Groundedness check failed: ${r.status} ${await r.text()}`);
+  const json = (await r.json()) as { choices?: { message?: { content?: string } }[] };
+  const out = (json.choices?.[0]?.message?.content ?? "").trim().toUpperCase();
+  return out.startsWith("NO") ? "NO" : "YES";
+}
