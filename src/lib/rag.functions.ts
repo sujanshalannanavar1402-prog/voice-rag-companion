@@ -10,6 +10,19 @@ import {
   matchUnsafe,
   withRetry,
 } from "@/lib/rag.server";
+import { MSMARCO_XI_CORPUS } from "@/lib/corpus";
+
+function parseSourceDocId(raw: string | null): { id: string; strategy: string } {
+  if (!raw) return { id: "", strategy: "fixed_overlap" };
+  const idx = raw.lastIndexOf("::");
+  if (idx === -1) return { id: raw, strategy: "fixed_overlap" };
+  return { id: raw.slice(0, idx), strategy: raw.slice(idx + 2) };
+}
+
+function lookupParentText(id: string): string | null {
+  const row = MSMARCO_XI_CORPUS.find((r) => r.id === id);
+  return row ? row.text : null;
+}
 
 export const ingestPrepare = createServerFn({ method: "POST" }).handler(async () => {
   const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
@@ -42,7 +55,7 @@ export const ingestBatch = createServerFn({ method: "POST" })
         batch.map((c, j) => ({
           text: c.text,
           embedding: JSON.stringify(vectors[j]) as unknown as string,
-          source_doc_id: c.source_doc_id,
+          source_doc_id: `${c.source_doc_id}::${c.chunk_strategy}`,
         })),
       );
       if (error) {
@@ -84,11 +97,10 @@ export const debugRetrieval = createServerFn({ method: "POST" })
       if (error) throw new Error(error.message);
       return {
         query,
-        matches: (matches ?? []).map((m: { text: string; similarity: number; source_doc_id: string | null }) => ({
-          text: m.text,
-          similarity: m.similarity,
-          source_doc_id: m.source_doc_id,
-        })),
+        matches: (matches ?? []).map((m: { text: string; similarity: number; source_doc_id: string | null }) => {
+          const { id, strategy } = parseSourceDocId(m.source_doc_id);
+          return { text: m.text, similarity: m.similarity, source_doc_id: `${id} [${strategy}]` };
+        }),
       };
     } catch (e) {
       console.error("[debug-retrieval] failed:", e);
@@ -133,7 +145,6 @@ export type RagDebug = {
   retrieved: { similarity: number | null; source_doc_id: string | null; preview: string }[];
   notes: string[];
 };
-
 
 export const corpusStats = createServerFn({ method: "POST" }).handler(async () => {
   try {
@@ -262,11 +273,22 @@ export const ragAnswer = createServerFn({ method: "POST" })
         similarity: number;
         source_doc_id: string | null;
       }[];
-      const sources = rows.map((m) => m.text);
-      debug.retrieved = rows.map((m) => ({
-        similarity: m.similarity ?? null,
-        source_doc_id: m.source_doc_id ?? null,
-        preview: String(m.text ?? "").slice(0, 100),
+      const parsed = rows.map((m) => {
+        const { id, strategy } = parseSourceDocId(m.source_doc_id);
+        const parentText = strategy === "parent_child" ? lookupParentText(id) : null;
+        return {
+          text: parentText ?? m.text,
+          similarity: m.similarity ?? null,
+          source_doc_id: id,
+          chunk_strategy: strategy,
+          preview: String(m.text ?? "").slice(0, 100),
+        };
+      });
+      const sources = parsed.map((m) => m.text);
+      debug.retrieved = parsed.map((m) => ({
+        similarity: m.similarity,
+        source_doc_id: `${m.source_doc_id} [${m.chunk_strategy}]`,
+        preview: m.preview,
       }));
       if (rows.length === 0) debug.notes.push("Retrieval returned 0 chunks — the chunks table may be empty.");
       const retrieval_ms = Date.now() - retrievalStart;
@@ -322,10 +344,8 @@ export const ragAnswer = createServerFn({ method: "POST" })
       await logRun(latency);
 
       return { answer, sources, latency, debug };
-
     } catch (e) {
       debug.notes.push(`Pipeline threw: ${String(e)}`);
       return { answer: "", sources: [], latency: null, debug, error: String(e) };
     }
   });
-
