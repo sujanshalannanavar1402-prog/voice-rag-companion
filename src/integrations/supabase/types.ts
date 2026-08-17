@@ -16,23 +16,29 @@ export type Database = {
     Tables: {
       chunks: {
         Row: {
+          chunk_strategy: string
           created_at: string
           embedding: string | null
           id: string
+          parent_text: string | null
           source_doc_id: string | null
           text: string
         }
         Insert: {
+          chunk_strategy?: string
           created_at?: string
           embedding?: string | null
           id?: string
+          parent_text?: string | null
           source_doc_id?: string | null
           text: string
         }
         Update: {
+          chunk_strategy?: string
           created_at?: string
           embedding?: string | null
           id?: string
+          parent_text?: string | null
           source_doc_id?: string | null
           text?: string
         }
@@ -85,7 +91,9 @@ export type Database = {
       match_chunks: {
         Args: { match_count?: number; query_embedding: string }
         Returns: {
+          chunk_strategy: string
           id: string
+          parent_text: string
           similarity: number
           source_doc_id: string
           text: string

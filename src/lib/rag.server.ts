@@ -25,7 +25,69 @@ export function chunkWords(text: string, size = 200, overlap = 30): string[] {
   return chunks;
 }
 
-export type PendingChunk = { text: string; source_doc_id: string };
+export type ChunkStrategy = "fixed_overlap" | "semantic" | "parent_child";
+
+export type PendingChunk = {
+  text: string;
+  source_doc_id: string;
+  chunk_strategy: ChunkStrategy;
+  parent_text: string | null;
+};
+
+function splitSentences(text: string): string[] {
+  return text
+    .split(/(?<=[.!?])\s+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function bagOfWords(text: string): Map<string, number> {
+  const map = new Map<string, number>();
+  for (const w of text.toLowerCase().match(/[a-z0-9']+/g) ?? []) {
+    map.set(w, (map.get(w) ?? 0) + 1);
+  }
+  return map;
+}
+
+/** Lexical cosine similarity between two sentences (no embedding API cost). */
+export function lexicalSimilarity(a: string, b: string): number {
+  const va = bagOfWords(a);
+  const vb = bagOfWords(b);
+  let dot = 0;
+  for (const [k, v] of va) dot += v * (vb.get(k) ?? 0);
+  const na = Math.sqrt([...va.values()].reduce((s, v) => s + v * v, 0));
+  const nb = Math.sqrt([...vb.values()].reduce((s, v) => s + v * v, 0));
+  return na && nb ? dot / (na * nb) : 0;
+}
+
+/**
+ * Semantic chunking: keep appending sentences while they stay similar to the
+ * running chunk; start a new chunk once similarity drops below the threshold.
+ */
+export function chunkSemantic(text: string, threshold = 0.75, maxWords = 220): string[] {
+  const sentences = splitSentences(text);
+  if (sentences.length === 0) return [];
+  const chunks: string[] = [];
+  let current = sentences[0]!;
+  for (let i = 1; i < sentences.length; i++) {
+    const sentence = sentences[i]!;
+    const sim = lexicalSimilarity(current, sentence);
+    const wouldOverflow = (current + " " + sentence).split(/\s+/).length > maxWords;
+    if (sim >= threshold && !wouldOverflow) {
+      current += " " + sentence;
+    } else {
+      chunks.push(current);
+      current = sentence;
+    }
+  }
+  chunks.push(current);
+  return chunks.filter((c) => c.trim());
+}
+
+/** Parent/child chunking: small child chunks that carry the full passage as parent_text. */
+export function chunkParentChild(text: string, childSize = 60, overlap = 10): string[] {
+  return chunkWords(text, childSize, overlap);
+}
 
 /** Deterministic chunk list for the bundled corpus, so batches are stable across calls. */
 export async function buildAllChunks(): Promise<PendingChunk[]> {
@@ -33,11 +95,26 @@ export async function buildAllChunks(): Promise<PendingChunk[]> {
   const all: PendingChunk[] = [];
   for (const row of MSMARCO_XI_CORPUS) {
     for (const piece of chunkWords(row.text)) {
-      if (piece.trim()) all.push({ text: piece, source_doc_id: row.id });
+      if (piece.trim())
+        all.push({ text: piece, source_doc_id: row.id, chunk_strategy: "fixed_overlap", parent_text: null });
+    }
+    for (const piece of chunkSemantic(row.text)) {
+      if (piece.trim())
+        all.push({ text: piece, source_doc_id: row.id, chunk_strategy: "semantic", parent_text: null });
+    }
+    for (const piece of chunkParentChild(row.text)) {
+      if (piece.trim())
+        all.push({
+          text: piece,
+          source_doc_id: row.id,
+          chunk_strategy: "parent_child",
+          parent_text: row.text,
+        });
     }
   }
   return all;
 }
+
 
 class RateLimitError extends Error {
   constructor(
