@@ -42,8 +42,11 @@ export type Database = {
         Row: {
           created_at: string
           generation_ms: number | null
+          grounded: boolean | null
           id: string
           query_text: string | null
+          refusal_reason: string | null
+          refused: boolean
           retrieval_ms: number | null
           stt_ms: number | null
           total_ms: number | null
@@ -51,8 +54,11 @@ export type Database = {
         Insert: {
           created_at?: string
           generation_ms?: number | null
+          grounded?: boolean | null
           id?: string
           query_text?: string | null
+          refusal_reason?: string | null
+          refused?: boolean
           retrieval_ms?: number | null
           stt_ms?: number | null
           total_ms?: number | null
@@ -60,8 +66,11 @@ export type Database = {
         Update: {
           created_at?: string
           generation_ms?: number | null
+          grounded?: boolean | null
           id?: string
           query_text?: string | null
+          refusal_reason?: string | null
+          refused?: boolean
           retrieval_ms?: number | null
           stt_ms?: number | null
           total_ms?: number | null
