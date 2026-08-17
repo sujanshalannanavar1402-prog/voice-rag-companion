@@ -349,3 +349,67 @@ export const ragAnswer = createServerFn({ method: "POST" })
       return { answer: "", sources: [], latency: null, debug, error: String(e) };
     }
   });
+function percentile(sorted: number[], p: number): number {
+  if (sorted.length === 0) return 0;
+  const idx = Math.ceil((p / 100) * sorted.length) - 1;
+  return sorted[Math.max(0, Math.min(idx, sorted.length - 1))]!;
+}
+
+export const latencyStats = createServerFn({ method: "POST" }).handler(async () => {
+  try {
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { data, error } = await supabaseAdmin
+      .from("latency_logs")
+      .select("total_ms, stt_ms, retrieval_ms, generation_ms, refused, grounded");
+    if (error) throw new Error(error.message);
+    const rows = data ?? [];
+
+    const totals = rows.map((r) => Number(r.total_ms ?? 0)).sort((a, b) => a - b);
+    const stts = rows.map((r) => Number(r.stt_ms ?? 0)).sort((a, b) => a - b);
+    const retrievals = rows.map((r) => Number(r.retrieval_ms ?? 0)).sort((a, b) => a - b);
+    const generations = rows.map((r) => Number(r.generation_ms ?? 0)).sort((a, b) => a - b);
+
+    const refusedCount = rows.filter((r) => r.refused === true).length;
+    const answeredCount = rows.length - refusedCount;
+    const groundedCount = rows.filter((r) => r.grounded === true).length;
+    const ungroundedCount = rows.filter((r) => r.grounded === false).length;
+
+    return {
+      total_queries: rows.length,
+      refused_count: refusedCount,
+      answered_count: answeredCount,
+      grounded_count: groundedCount,
+      ungrounded_count: ungroundedCount,
+      stages: {
+        total_ms: { p50: percentile(totals, 50), p70: percentile(totals, 70), p100: percentile(totals, 100) },
+        stt_ms: { p50: percentile(stts, 50), p70: percentile(stts, 70), p100: percentile(stts, 100) },
+        retrieval_ms: {
+          p50: percentile(retrievals, 50),
+          p70: percentile(retrievals, 70),
+          p100: percentile(retrievals, 100),
+        },
+        generation_ms: {
+          p50: percentile(generations, 50),
+          p70: percentile(generations, 70),
+          p100: percentile(generations, 100),
+        },
+      },
+      error: null as string | null,
+    };
+  } catch (e) {
+    return {
+      total_queries: 0,
+      refused_count: 0,
+      answered_count: 0,
+      grounded_count: 0,
+      ungrounded_count: 0,
+      stages: {
+        total_ms: { p50: 0, p70: 0, p100: 0 },
+        stt_ms: { p50: 0, p70: 0, p100: 0 },
+        retrieval_ms: { p50: 0, p70: 0, p100: 0 },
+        generation_ms: { p50: 0, p70: 0, p100: 0 },
+      },
+      error: String(e),
+    };
+  }
+});
