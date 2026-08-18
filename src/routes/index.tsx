@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useRef, useState } from "react";
-import { corpusStats, debugRetrieval, ingestPrepare, ingestBatch, chunkCount, ragAnswer, speechToText } from "@/lib/rag.functions";
+import { corpusStats, debugRetrieval, ingestPrepare, ingestProgress, ingestBatch, chunkCount, ragAnswer, speechToText } from "@/lib/rag.functions";
 
 
 export const Route = createFileRoute("/")({
@@ -63,6 +63,7 @@ function sleep(ms: number) {
 
 function Index() {
   const prepareFn = useServerFn(ingestPrepare);
+  const progressFn = useServerFn(ingestProgress);
   const batchFn = useServerFn(ingestBatch);
   const countFn = useServerFn(chunkCount);
   const stt = useServerFn(speechToText);
@@ -97,17 +98,28 @@ function Index() {
     setStatsBusy(false);
   }
 
-  async function handleLoad() {
+  async function handleLoad(fresh = false) {
     setLoading(true);
     setLoadResult(null);
     const allErrors: string[] = [];
     try {
-      setLoadStatus("Preparing ingestion…");
-      const prep = await prepareFn();
-      if (prep.error) allErrors.push(`Prepare: ${prep.error}`);
-      const totalBatches = prep.total_batches;
+      let totalBatches: number;
+      let startBatch = 0;
+      if (fresh) {
+        setLoadStatus("Clearing table and preparing ingestion…");
+        const prep = await prepareFn({ data: { clear: true } });
+        if (prep.error) allErrors.push(`Prepare: ${prep.error}`);
+        totalBatches = prep.total_batches;
+      } else {
+        setLoadStatus("Checking progress…");
+        const prog = await progressFn();
+        if (prog.error) allErrors.push(`Progress: ${prog.error}`);
+        totalBatches = prog.total_batches;
+        startBatch = prog.next_batch_index;
+        if (startBatch > 0) setLoadStatus(`Resuming at batch ${startBatch + 1} of ${totalBatches}…`);
+      }
 
-      for (let batchIndex = 0; batchIndex < totalBatches; batchIndex++) {
+      for (let batchIndex = startBatch; batchIndex < totalBatches; batchIndex++) {
         setLoadStatus(`Embedding batch ${batchIndex + 1} of ${totalBatches}…`);
         try {
           const res = await batchFn({ data: { batchIndex } });
@@ -211,13 +223,22 @@ function Index() {
       </p>
 
       <section className="mt-8 rounded-xl border border-border p-5">
-        <button
-          onClick={handleLoad}
-          disabled={loading}
-          className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
-        >
-          {loading ? "Loading…" : "Load Data"}
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            onClick={() => handleLoad(false)}
+            disabled={loading}
+            className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
+          >
+            {loading ? "Loading…" : "Load Data (resumes)"}
+          </button>
+          <button
+            onClick={() => handleLoad(true)}
+            disabled={loading}
+            className="rounded-md border border-border px-3 py-2 text-xs font-medium text-foreground transition-colors hover:bg-muted disabled:opacity-50"
+          >
+            Clear &amp; reload from scratch
+          </button>
+        </div>
         {loadStatus && <p className="mt-3 text-sm text-muted-foreground">{loadStatus}</p>}
         {loadResult && (
           <div className="mt-4 space-y-1 rounded-lg bg-muted p-4 text-sm text-foreground">

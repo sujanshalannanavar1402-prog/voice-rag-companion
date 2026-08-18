@@ -89,11 +89,14 @@ export function chunkParentChild(text: string, childSize = 60, overlap = 10): st
   return chunkWords(text, childSize, overlap);
 }
 
+/** Only the first N passages get the three-strategy treatment, to keep ingestion tractable. */
+export const INGEST_PASSAGE_LIMIT = 400;
+
 /** Deterministic chunk list for the bundled corpus, so batches are stable across calls. */
 export async function buildAllChunks(): Promise<PendingChunk[]> {
   const { MSMARCO_XI_CORPUS } = await import("@/lib/corpus");
   const all: PendingChunk[] = [];
-  for (const row of MSMARCO_XI_CORPUS) {
+  for (const row of MSMARCO_XI_CORPUS.slice(0, INGEST_PASSAGE_LIMIT)) {
     for (const piece of chunkWords(row.text)) {
       if (piece.trim())
         all.push({ text: piece, source_doc_id: row.id, chunk_strategy: "fixed_overlap", parent_text: null });
