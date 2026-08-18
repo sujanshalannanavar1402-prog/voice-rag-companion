@@ -24,17 +24,40 @@ function lookupParentText(id: string): string | null {
   return row ? row.text : null;
 }
 
-export const ingestPrepare = createServerFn({ method: "POST" }).handler(async () => {
+export const ingestPrepare = createServerFn({ method: "POST" })
+  .inputValidator((input?: { clear?: boolean }) => input ?? {})
+  .handler(async ({ data }) => {
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const allChunks = await buildAllChunks();
+    let error: { message: string } | null = null;
+    if (data.clear !== false) {
+      const res = await supabaseAdmin.from("chunks").delete().not("id", "is", null);
+      error = res.error;
+      if (error) console.error("[ingest] clear error:", JSON.stringify(error));
+      console.log("[ingest] cleared table; chunks to embed:", allChunks.length);
+    }
+    return {
+      total_rows: (await import("@/lib/corpus")).MSMARCO_XI_CORPUS.length,
+      total_chunks: allChunks.length,
+      batch_size: EMBED_BATCH_SIZE,
+      total_batches: Math.ceil(allChunks.length / EMBED_BATCH_SIZE),
+      error: error ? error.message : null,
+    };
+  });
+
+/** How far ingestion got, so a refreshed tab can resume instead of restarting. */
+export const ingestProgress = createServerFn({ method: "POST" }).handler(async () => {
   const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
   const allChunks = await buildAllChunks();
-  const { error } = await supabaseAdmin.from("chunks").delete().not("id", "is", null);
-  if (error) console.error("[ingest] clear error:", JSON.stringify(error));
-  console.log("[ingest] cleared table; chunks to embed:", allChunks.length);
+  const totalBatches = Math.ceil(allChunks.length / EMBED_BATCH_SIZE);
+  const { count, error } = await supabaseAdmin.from("chunks").select("*", { count: "exact", head: true });
+  const inTable = count ?? 0;
   return {
-    total_rows: (await import("@/lib/corpus")).MSMARCO_XI_CORPUS.length,
-    total_chunks: allChunks.length,
+    total_chunks_expected: allChunks.length,
+    total_chunks_in_table: inTable,
     batch_size: EMBED_BATCH_SIZE,
-    total_batches: Math.ceil(allChunks.length / EMBED_BATCH_SIZE),
+    total_batches: totalBatches,
+    next_batch_index: Math.min(Math.floor(inTable / EMBED_BATCH_SIZE), totalBatches),
     error: error ? error.message : null,
   };
 });
@@ -47,31 +70,44 @@ export const ingestBatch = createServerFn({ method: "POST" })
     const allChunks = await buildAllChunks();
     const start = data.batchIndex * EMBED_BATCH_SIZE;
     const batch = allChunks.slice(start, start + EMBED_BATCH_SIZE);
-    if (batch.length === 0) return { inserted: 0, attempted: 0, sample: "", error: null as string | null };
+    if (batch.length === 0) return { inserted: 0, attempted: 0, sample: "", skipped: false, error: null as string | null };
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    // Resume support: if this batch's first chunk is already stored, treat it as done.
+    const probe = await supabaseAdmin
+      .from("chunks")
+      .select("id")
+      .eq("text", batch[0]!.text)
+      .eq("source_doc_id", `${batch[0]!.source_doc_id}::${batch[0]!.chunk_strategy}`)
+      .limit(1);
+    if ((probe.data?.length ?? 0) > 0) {
+      return { inserted: 0, attempted: batch.length, sample: "", skipped: true, error: null as string | null };
+    }
     try {
       const vectors = await embed(batch.map((c) => c.text), embedKey);
-      const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
       const { error } = await supabaseAdmin.from("chunks").insert(
         batch.map((c, j) => ({
           text: c.text,
           embedding: JSON.stringify(vectors[j]) as unknown as string,
           source_doc_id: `${c.source_doc_id}::${c.chunk_strategy}`,
+          chunk_strategy: c.chunk_strategy,
+          parent_text: c.parent_text,
         })),
       );
       if (error) {
         console.error("[ingest] insert error:", JSON.stringify(error));
-        return { inserted: 0, attempted: batch.length, sample: "", error: `insert: ${error.message}` };
+        return { inserted: 0, attempted: batch.length, sample: "", skipped: false, error: `insert: ${error.message}` };
       }
       console.log(`[ingest] batch ${data.batchIndex + 1}: inserted ${batch.length}`);
       return {
         inserted: batch.length,
         attempted: batch.length,
         sample: batch[0]!.text.slice(0, 400),
+        skipped: false,
         error: null as string | null,
       };
     } catch (e) {
       console.error("[ingest] batch failed:", data.batchIndex, e);
-      return { inserted: 0, attempted: batch.length, sample: "", error: `embed: ${String(e)}` };
+      return { inserted: 0, attempted: batch.length, sample: "", skipped: false, error: `embed: ${String(e)}` };
     }
   });
 
