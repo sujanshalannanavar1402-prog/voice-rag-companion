@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useRef, useState } from "react";
 import { corpusStats, debugRetrieval, ingestPrepare, ingestProgress, ingestBatch, chunkCount, ragAnswer, speechToText } from "@/lib/rag.functions";
@@ -217,7 +217,12 @@ function Index() {
 
   return (
     <main className="mx-auto min-h-screen max-w-2xl px-6 py-14">
-      <h1 className="text-2xl font-semibold tracking-tight text-foreground">Voice RAG MVP</h1>
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-semibold tracking-tight text-foreground">Voice RAG MVP</h1>
+        <Link to="/analytics" className="text-sm text-muted-foreground underline underline-offset-2 hover:text-foreground">
+          Analytics →
+        </Link>
+      </div>
       <p className="mt-1 text-sm text-muted-foreground">
         Load a corpus, then ask a question with your voice.
       </p>
@@ -273,107 +278,4 @@ function Index() {
         )}
       </section>
 
-      <section className="mt-6 rounded-xl border border-border p-5">
-        <div className="flex items-center justify-between">
-          <h2 className="text-sm font-medium text-foreground">Corpus Stats</h2>
-          <button
-            onClick={handleStats}
-            disabled={statsBusy}
-            className="rounded-md border border-border px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-muted disabled:opacity-50"
-          >
-            {statsBusy ? "Loading…" : "Refresh"}
-          </button>
-        </div>
-        {stats && (
-          <div className="mt-3 space-y-2 rounded-lg bg-muted p-4 text-xs">
-            {stats.error && <p className="text-destructive">{stats.error}</p>}
-            <p>Total chunks: {stats.total_chunks}</p>
-            {stats.samples.map((s, i) => (
-              <p key={s.id} className="whitespace-pre-wrap text-muted-foreground">
-                #{i + 1} · doc {s.source_doc_id ?? "—"} · {s.preview}
-              </p>
-            ))}
-          </div>
-        )}
-      </section>
-
-      <section className="mt-6 rounded-xl border border-border p-5">
-        <button
-          onClick={recording ? stopRecording : startRecording}
-          disabled={busy}
-          className={`flex h-16 w-16 items-center justify-center rounded-full text-2xl transition-colors disabled:opacity-50 ${
-            recording ? "bg-destructive text-destructive-foreground" : "bg-secondary text-secondary-foreground"
-          }`}
-          aria-label={recording ? "Stop recording" : "Start recording"}
-        >
-          {recording ? "■" : "🎤"}
-        </button>
-        <p className="mt-3 text-xs text-muted-foreground">
-          {recording ? "Recording — tap to stop" : busy ? "Thinking…" : "Tap the mic and ask a question"}
-        </p>
-
-        {transcript && (
-          <p className="mt-5 text-sm text-foreground">
-            <span className="text-muted-foreground">You said: </span>
-            {transcript}
-          </p>
-        )}
-
-        {answer && (
-          <div className="mt-4 rounded-lg bg-muted p-4">
-            <p className="whitespace-pre-wrap text-sm text-foreground">{answer}</p>
-            {totalMs !== null && (
-              <p className="mt-2 text-xs text-muted-foreground">{totalMs} ms total</p>
-            )}
-          </div>
-        )}
-
-        {ragDebug && (
-          <div className="mt-4 rounded-lg border border-border p-4 text-xs">
-            <button
-              onClick={() => setShowDebug((v) => !v)}
-              className="text-xs font-medium text-foreground"
-              aria-expanded={showDebug}
-            >
-              {showDebug ? "▾" : "▸"} Debug Info
-            </button>
-            {showDebug && (
-              <div className="mt-3 space-y-2">
-                <p>
-                  Refused: {String(ragDebug.refused)}
-                  {ragDebug.refused ? ` · reason: ${ragDebug.refusal_reason ?? "unknown"}` : ""}
-                </p>
-                <p>Guardrail ran: {String(ragDebug.guardrail_ran)}</p>
-                <p>
-                  Centroid similarity:{" "}
-                  {ragDebug.centroid_similarity === null ? "n/a" : ragDebug.centroid_similarity.toFixed(4)}
-                </p>
-                <p>
-                  Groundedness check ran: {String(ragDebug.groundedness_ran)} · result:{" "}
-                  {ragDebug.groundedness_result ?? "n/a"}
-                </p>
-                <div className="border-t border-border pt-2">
-                  <p className="text-muted-foreground">Top-{ragDebug.retrieved.length} retrieved chunks:</p>
-                  {ragDebug.retrieved.length === 0 && <p>None returned.</p>}
-                  {ragDebug.retrieved.map((r, i) => (
-                    <p key={i} className="mt-1 whitespace-pre-wrap">
-                      #{i + 1} · sim {r.similarity === null ? "—" : r.similarity.toFixed(4)} · doc{" "}
-                      {r.source_doc_id ?? "—"} · {r.preview}
-                    </p>
-                  ))}
-                </div>
-                {ragDebug.notes.length > 0 && (
-                  <div className="border-t border-border pt-2 text-muted-foreground">
-                    {ragDebug.notes.map((n, i) => (
-                      <p key={i}>• {n}</p>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        )}
-      </section>
-    </main>
-  );
-}
+      <section className="mt-6 rounded-xl
