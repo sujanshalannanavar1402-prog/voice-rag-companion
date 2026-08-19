@@ -278,4 +278,93 @@ function Index() {
         )}
       </section>
 
-      <section className="mt-6 rounded-xl
+      <section className="mt-6 rounded-xl border border-border p-5">
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-medium text-foreground">Corpus Stats</h2>
+          <button
+            onClick={handleStats}
+            disabled={statsBusy}
+            className="rounded-md border border-border px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-muted disabled:opacity-50"
+          >
+            {statsBusy ? "Checking…" : "Refresh Stats"}
+          </button>
+        </div>
+        {stats && (
+          <div className="mt-3 space-y-2 text-xs">
+            <p className="text-foreground">Total chunks in table: {stats.total_chunks}</p>
+            {stats.error && <p className="text-destructive">{stats.error}</p>}
+            {stats.samples.length > 0 && (
+              <div className="mt-2 space-y-2 rounded-lg bg-muted p-3">
+                {stats.samples.map((s) => (
+                  <div key={s.id} className="border-t border-border pt-2 first:border-t-0 first:pt-0">
+                    <p className="text-muted-foreground">doc {s.source_doc_id ?? "—"}</p>
+                    <p className="whitespace-pre-wrap text-foreground">{s.preview}…</p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </section>
+
+      <section className="mt-6 rounded-xl border border-border p-5">
+        <h2 className="text-sm font-medium text-foreground">Ask by voice</h2>
+        <div className="mt-3 flex items-center gap-3">
+          <button
+            onClick={recording ? stopRecording : startRecording}
+            disabled={busy}
+            className={`rounded-full px-5 py-2 text-sm font-medium transition-colors disabled:opacity-50 ${
+              recording
+                ? "bg-destructive text-destructive-foreground hover:opacity-90"
+                : "bg-primary text-primary-foreground hover:opacity-90"
+            }`}
+          >
+            {recording ? "Stop" : busy ? "Working…" : "Start Recording"}
+          </button>
+          {totalMs !== null && (
+            <span className="text-xs text-muted-foreground">Total latency: {totalMs} ms</span>
+          )}
+        </div>
+
+        {transcript && (
+          <div className="mt-4 rounded-lg bg-muted p-4 text-sm">
+            <p className="text-xs font-medium text-muted-foreground">Transcript</p>
+            <p className="mt-1 text-foreground">{transcript}</p>
+          </div>
+        )}
+
+        {answer && (
+          <div className="mt-3 rounded-lg bg-muted p-4 text-sm">
+            <p className="text-xs font-medium text-muted-foreground">Answer</p>
+            <p className="mt-1 whitespace-pre-wrap text-foreground">{answer}</p>
+          </div>
+        )}
+
+        {ragDebug && (
+          <div className="mt-3">
+            <button
+              onClick={() => setShowDebug((v) => !v)}
+              className="text-xs font-medium text-muted-foreground underline underline-offset-2 hover:text-foreground"
+            >
+              {showDebug ? "Hide debug info" : "Show debug info"}
+            </button>
+            {showDebug && (
+              <div className="mt-2 space-y-1 rounded-lg bg-muted p-4 text-xs text-foreground">
+                <p>Refused: {String(ragDebug.refused)}</p>
+                <p>Groundedness check ran: {String(ragDebug.groundedness_ran)}</p>
+                <p>Grounded: {String(ragDebug.grounded)}</p>
+                {ragDebug.notes.length > 0 && (
+                  <ul className="list-disc pl-4">
+                    {ragDebug.notes.map((n, i) => (
+                      <li key={i}>{n}</li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+      </section>
+    </main>
+  );
+}
